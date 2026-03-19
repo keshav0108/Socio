@@ -4,3 +4,4 @@ opencv-python
 python-dotenv
 numpy 
 rich
+yt-dlp
