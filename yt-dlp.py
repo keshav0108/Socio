@@ -73,32 +73,44 @@ def download_video(url: str, output_path: Path) -> bool:
         return False
 
 
-def main() -> None:
-    try:
-        links = fetch_links_from_sheet(SHEET_URL, LINKS_COLUMN)
-    except Exception as exc:
-        print(f"Failed to read Google Sheet: {exc}")
-        return
-
+def download_from_sheet(
+    sheet_url: str = SHEET_URL,
+    column_name: str = LINKS_COLUMN,
+    output_dir: Path = OUTPUT_DIR,
+) -> dict:
+    links = fetch_links_from_sheet(sheet_url, column_name)
     if not links:
-        print("No links found.")
-        return
+        return {"downloaded": 0, "failed": 0, "total_links": 0}
 
-    next_index = get_next_index(OUTPUT_DIR)
+    next_index = get_next_index(output_dir)
     downloaded = 0
     failed = 0
 
     for url in links:
-        output_path = OUTPUT_DIR / f"{next_index}.mp4"
+        output_path = output_dir / f"{next_index}.mp4"
         if download_video(url, output_path):
             downloaded += 1
             next_index += 1
         else:
             failed += 1
 
-    print(f"Downloaded: {downloaded}")
-    if failed:
-        print(f"Failed: {failed}")
+    return {"downloaded": downloaded, "failed": failed, "total_links": len(links)}
+
+
+def main() -> None:
+    try:
+        result = download_from_sheet(SHEET_URL, LINKS_COLUMN, OUTPUT_DIR)
+    except Exception as exc:
+        print(f"Failed to read Google Sheet: {exc}")
+        return
+
+    if result["total_links"] == 0:
+        print("No links found.")
+        return
+
+    print(f"Downloaded: {result['downloaded']}")
+    if result["failed"]:
+        print(f"Failed: {result['failed']}")
 
 
 if __name__ == "__main__":

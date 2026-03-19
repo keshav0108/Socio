@@ -2,7 +2,7 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# System dependencies required by ffmpeg/opencv and font download at runtime.
+# System deps for ffmpeg, yt-dlp networking, and OpenCV runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     ffmpeg \

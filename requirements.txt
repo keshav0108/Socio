@@ -2,6 +2,6 @@ fastapi
 uvicorn
 opencv-python
 python-dotenv
-numpy 
+numpy
 rich
 yt-dlp

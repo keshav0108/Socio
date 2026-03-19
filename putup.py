@@ -45,32 +45,10 @@ def find_config(name):
             data = json.loads(f.read_text())
         except:
             continue
-        if isinstance(data, list):
-            for item in data:
-                if not isinstance(item, dict):
-                    continue
-                item_name = str(item.get("brand_name") or item.get("name") or "").lower()
-                if item_name == name.lower():
-                    return item
-            continue
-        if isinstance(data, dict):
-            item_name = str(data.get("brand_name") or data.get("name") or "").lower()
-            if item_name == name.lower():
-                return data
+        if data.get("name", "").lower() == name.lower():
+            return data
     if Path("brand.json").exists():
-        fallback = json.loads(Path("brand.json").read_text())
-        if isinstance(fallback, list):
-            if not fallback:
-                sys.exit("Brand config not found")
-            if name:
-                for item in fallback:
-                    if not isinstance(item, dict):
-                        continue
-                    item_name = str(item.get("brand_name") or item.get("name") or "").lower()
-                    if item_name == name.lower():
-                        return item
-            return fallback[0]
-        return fallback
+        return json.loads(Path("brand.json").read_text())
     sys.exit("Brand config not found")
 
 
