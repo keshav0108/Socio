@@ -2,3 +2,5 @@ fastapi
 uvicorn
 opencv-python
 python-dotenv
+numpy 
+rich
