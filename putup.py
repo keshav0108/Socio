@@ -45,6 +45,10 @@ def find_config(name):
             data = json.loads(f.read_text())
         except:
             continue
+        # `data.json` in this repo is a list (links array), not a config object.
+        # Only treat JSON objects as brand configs.
+        if not isinstance(data, dict):
+            continue
         if data.get("name", "").lower() == name.lower():
             return data
     if Path("brand.json").exists():
