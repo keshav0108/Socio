@@ -1,0 +1,22 @@
+{
+    "sno.": 1,
+    "name": "Finzarc",
+    "handle": "@finzarc.ai",
+    "logo": "logo/finzarc_logo.png",
+  
+    "logo_width": 130,
+  
+    "spacing": {
+      "top_padding": 80,
+      "between_logo_handle": 20,
+      "between_brand_and_handle": 70,
+      "between_container1_and_container2": 20,
+      "between_handle_title": 25,
+      "between_title_video": 60
+    },
+  
+    "fonts": {
+      "title_size": 40,
+      "handle_size": 42
+    }
+  }
