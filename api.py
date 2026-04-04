@@ -5,7 +5,7 @@ import tempfile
 import importlib.util
 from pathlib import Path
 
-from fastapi import FastAPI, Header, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
@@ -27,8 +27,20 @@ os.makedirs(FINAL_DIR, exist_ok=True)
 def verify_key(api_key: str | None):
     if not API_KEYS:
         return
-    if not api_key or not is_valid_api_key(api_key):
+    if not api_key or not is_valid_api_key(api_key.strip()):
         raise HTTPException(status_code=401, detail="Invalid API Key")
+
+
+def get_api_key(request: Request) -> str | None:
+    """Resolve API key from common headers (n8n users often mislabel the header as API_KEYS)."""
+    for name, value in request.headers.items():
+        normalized = name.lower().replace("-", "_")
+        if normalized in ("api_key", "x_api_key", "api_keys"):
+            return value.strip()
+    auth = request.headers.get("authorization")
+    if auth and auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+    return None
 
 
 def load_ytdlp_module():
@@ -51,7 +63,7 @@ def process_video_api(
     filename: str,
     brand_name: str | None = None,
     title: str | None = None,
-    api_key: str | None = Header(None),
+    api_key: str | None = Depends(get_api_key),
 ):
     verify_key(api_key)
 
@@ -118,7 +130,7 @@ async def _parse_url_from_request(request: Request, url_query: str | None) -> st
 @app.post("/clip_download")
 async def clip_download(
     request: Request,
-    api_key: str | None = Header(None),
+    api_key: str | None = Depends(get_api_key),
     url: str | None = Query(None, description="Reel or video URL (optional if sent in body)"),
 ):
     """Download one clip and return the MP4 as binary (for n8n HTTP Request → file → Drive)."""
@@ -163,7 +175,7 @@ async def clip_download(
 @app.post("/clip_download_sheet")
 def clip_download_sheet(
     sheet_url: str = "https://docs.google.com/spreadsheets/d/1bjUzMcmFiejlVv_N2qFSCBUOYM4JgsG9ZGXMb482-6Y/edit?usp=sharing",
-    api_key: str | None = Header(None),
+    api_key: str | None = Depends(get_api_key),
 ):
     verify_key(api_key)
 
