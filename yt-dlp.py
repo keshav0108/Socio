@@ -10,11 +10,9 @@ from urllib.request import urlopen
 
 import yt_dlp
 
-
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1bjUzMcmFiejlVv_N2qFSCBUOYM4JgsG9ZGXMb482-6Y/edit?usp=sharing"
 OUTPUT_DIR = Path("videos/raw")
 LINKS_COLUMN = "Links"
-
 
 def build_csv_export_url(sheet_url: str) -> str:
     parsed = urlparse(sheet_url)
@@ -25,7 +23,6 @@ def build_csv_export_url(sheet_url: str) -> str:
         raise ValueError("Invalid Google Sheet URL.")
     sheet_id = match.group(1)
     return f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
-
 
 def fetch_links_from_sheet(sheet_url: str, column_name: str) -> List[str]:
     csv_url = build_csv_export_url(sheet_url)
@@ -43,7 +40,6 @@ def fetch_links_from_sheet(sheet_url: str, column_name: str) -> List[str]:
             links.append(value)
     return links
 
-
 def get_next_index(output_dir: Path) -> int:
     output_dir.mkdir(parents=True, exist_ok=True)
     max_index = 0
@@ -55,7 +51,6 @@ def get_next_index(output_dir: Path) -> int:
         except ValueError:
             continue
     return max_index + 1
-
 
 def download_video(url: str, output_path: Path) -> bool:
     options = {
@@ -71,7 +66,6 @@ def download_video(url: str, output_path: Path) -> bool:
         return output_path.exists()
     except Exception:
         return False
-
 
 def download_from_sheet(
     sheet_url: str = SHEET_URL,
@@ -95,7 +89,6 @@ def download_from_sheet(
             failed += 1
 
     return {"downloaded": downloaded, "failed": failed, "total_links": len(links)}
-
 
 def main() -> None:
     try:

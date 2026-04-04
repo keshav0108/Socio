@@ -86,10 +86,7 @@ def make_circular_logo(
     border_px: int,
     border_bgr: tuple[int, int, int] = (255, 255, 255),
 ) -> Path:
-    """
-    Creates a circular PNG (with transparent outside) from `logo_path`.
-    Also draws a solid border ring around the circle.
-    """
+   
     img = cv2.imread(str(logo_path), cv2.IMREAD_UNCHANGED)
     if img is None:
         raise FileNotFoundError(f"Logo not found or unreadable: {logo_path}")
@@ -153,12 +150,7 @@ def run(cmd):
 
 
 def ensure_poppins_fonts() -> None:
-    """
-    Ensures Poppins font files are available locally for ffmpeg.
 
-    We download from the upstream Google Fonts repo (TTF), because the project
-    currently renders text via ffmpeg/libass (not via a web CSS pipeline).
-    """
     fonts_dir = Path("fonts")
     fonts_dir.mkdir(parents=True, exist_ok=True)
 
@@ -220,7 +212,7 @@ Dialogue: 0,0:00:00.00,9:59:59.99,Title,,0,0,0,,{esc_ass(text)}
     path.write_text(ass, encoding="utf-8")
 
 
-# 🔥 STRONG WRAP FUNCTION (NEVER OVERFLOW)
+# STRONG WRAP FUNCTION (NEVER OVERFLOW)
 def wrap_title_for_frame(title, max_chars_per_line, max_lines=6):
     lines = []
 
@@ -275,13 +267,13 @@ def process(input_path, output_path, config, title):
     # Use configured font size when available (see brand.json -> fonts.title_size).
     title_size = int(config.get("fonts", {}).get("title_size", 48))
 
-    # --- TEXT WRAP ---
+    #TEXT WRAP
     safe_w = W - (left * 2)
     # Wrap aggressively so it never clips horizontally.
     # (We also use the same wrapped text for ASS so y_video matches the actual lines.)
     max_chars_per_line = max(6, int(safe_w / (0.52 * title_size)))
 
-    # --- CONTAINER LAYOUT (centered as a whole) ---
+    # CONTAINER LAYOUT (centered as a whole)
     # These are local offsets inside the big container.
     gap_title_to_video = 4
     block_h = logo_height
@@ -320,10 +312,10 @@ def process(input_path, output_path, config, title):
         max_lines=title_lines_max,
     )
 
-    # --- TITLE HEIGHT (for non-overlap positioning) ---
+    # TITLE HEIGHT (for non-overlap positioning)
     title_h = title_lines * title_size + (title_lines - 1) * line_spacing
 
-    # --- VIDEO FRAME HEIGHT (after scaling to width=1080) ---
+    # VIDEO FRAME HEIGHT (after scaling to width=1080)
     scaled_video_h = int((video_h * W) / max(1, video_w))
 
     # Remaining height available for the visible video container (no vertical padding in video).
@@ -336,7 +328,7 @@ def process(input_path, output_path, config, title):
     container_h = container1_h + gap_container1_to_title + title_h + gap_title_to_video + video_container_h
     top_padding = max(0, (H - container_h) // 2)
 
-    # --- GLOBAL POSITIONS ---
+    # GLOBAL POSITIONS
     y_logo = top_padding
     y_brand = y_logo + y_brand_offset
     y_handle = y_logo + y_handle_offset
@@ -344,7 +336,7 @@ def process(input_path, output_path, config, title):
     y_video = y_title + title_h + gap_title_to_video
     text_x = left + logo_width + 16
 
-    # --- VIDEO FILTERS ---
+    # VIDEO FILTERS
     filters = [
         "color=size=1080x1920:color=black[base]",
 

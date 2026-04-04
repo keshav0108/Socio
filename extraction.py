@@ -7,14 +7,10 @@ import cv2
 import numpy as np
 from rich import print
 
-
 RAW_DIR = Path("videos/raw")
 CROPPED_DIR = Path("videos/cropped")
 
-
-# -------------------------------
-# 🎯 Detect inner video frame
-# -------------------------------
+# Detect inner video frame
 def detect_video_frame(video_path):
     cap = cv2.VideoCapture(str(video_path))
 
@@ -59,10 +55,7 @@ def detect_video_frame(video_path):
 
     return best_box
 
-
-# -------------------------------
-# 🎯 Convert to FFmpeg crop
-# -------------------------------
+# Convert to FFmpeg crop
 def get_crop_filter(video_path):
     box = detect_video_frame(video_path)
 
@@ -80,10 +73,7 @@ def get_crop_filter(video_path):
 
     return f"crop={w}:{h}:{x}:{y}"
 
-
-# -------------------------------
-# 🎯 Apply crop with FFmpeg
-# -------------------------------
+# Apply crop with FFmpeg
 def apply_crop(input_file, output_file, crop):
     cmd = [
         "ffmpeg",
@@ -96,9 +86,7 @@ def apply_crop(input_file, output_file, crop):
 
     subprocess.run(cmd)
 
-
-
-#API Callable Function
+# API Callable Function
 def extract_video(input_file, output_file):
     input_path = Path(input_file)
     output_path = Path(output_file)
