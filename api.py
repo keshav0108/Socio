@@ -127,13 +127,16 @@ async def _parse_url_from_request(request: Request, url_query: str | None) -> st
     return None
 
 
-@app.post("/clip_download")
-async def clip_download(
+async def _clip_download_response(
     request: Request,
-    api_key: str | None = Depends(get_api_key),
-    url: str | None = Query(None, description="Reel or video URL (optional if sent in body)"),
-):
-    """Download one clip and return the MP4 as binary (for n8n HTTP Request → file → Drive)."""
+    api_key: str | None,
+    url: str | None,
+) -> FileResponse:
+    """Download one clip and return the MP4 as binary (for n8n HTTP Request → file → Drive).
+
+    The file is written only under the OS temp directory and removed after the response is sent
+    (see FileResponse background cleanup). Nothing is stored under videos/raw for this route.
+    """
     verify_key(api_key)
 
     reel_url = await _parse_url_from_request(request, url)
@@ -155,14 +158,17 @@ async def clip_download(
             pass
 
     try:
-        ok = ytdlp_module.download_video(reel_url, path)
+        ok, err = ytdlp_module.download_video(reel_url, path)
     except Exception as exc:
         _cleanup()
         raise HTTPException(status_code=400, detail=f"Download failed: {exc}") from exc
 
     if not ok or not path.exists():
         _cleanup()
-        raise HTTPException(status_code=400, detail="Download failed or file missing")
+        raise HTTPException(
+            status_code=400,
+            detail=err or "Download failed or file missing",
+        )
 
     return FileResponse(
         path,
@@ -170,6 +176,25 @@ async def clip_download(
         filename="reel.mp4",
         background=BackgroundTask(_cleanup),
     )
+
+
+@app.post("/clip_download")
+async def clip_download(
+    request: Request,
+    api_key: str | None = Depends(get_api_key),
+    url: str | None = Query(None, description="Reel or video URL (optional if sent in body)"),
+):
+    return await _clip_download_response(request, api_key, url)
+
+
+@app.post("/")
+async def clip_download_at_root(
+    request: Request,
+    api_key: str | None = Depends(get_api_key),
+    url: str | None = Query(None, description="Same as POST /clip_download if the HTTP client URL omits /clip_download"),
+):
+    """Same behavior as POST /clip_download — n8n sometimes has only the host root in the URL field."""
+    return await _clip_download_response(request, api_key, url)
 
 
 @app.post("/clip_download_sheet")
