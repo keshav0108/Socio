@@ -1,0 +1,13 @@
+# Netscape HTTP Cookie File
+# This template is NOT valid for Instagram — it only shows the file format.
+#
+# HOW TO GET A REAL FILE:
+# 1. Log in to https://www.instagram.com/ in Chrome (or Firefox).
+# 2. Use extension "Get cookies.txt LOCALLY" (or equivalent) → Export for instagram.com
+# 3. Save as: instagram_cookies.txt (same folder as this example on your server)
+# 4. Set YTDLP_COOKIE_FILE in .env to the absolute path of that file.
+#
+# Lines below are placeholders — replace the entire file with your export.
+
+.instagram.com	TRUE	/	TRUE	2000000000	sessionid	PASTE_REAL_SESSIONID_FROM_EXPORT
+.instagram.com	TRUE	/	TRUE	2000000000	csrftoken	PASTE_REAL_CSRF_FROM_EXPORT

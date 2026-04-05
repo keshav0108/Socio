@@ -2,6 +2,10 @@ venv/
 __pycache__/
 *.pyc
 .env
-# Instagram / yt-dlp Netscape cookies (never commit)
-cookies/
+# Browser cookie exports (often contain many sites' secrets — never commit)
+cookies.txt
+
+# Real Instagram cookie exports (never commit — use cookies.example.txt as template)
+cookies/instagram_cookies.txt
+cookies/cookies.txt
 *.cookies.txt

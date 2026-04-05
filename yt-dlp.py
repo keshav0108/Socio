@@ -56,8 +56,19 @@ def get_next_index(output_dir: Path) -> int:
             continue
     return max_index + 1
 
+def _prepare_temp_base(base: Path, output_path: Path) -> None:
+    """Remove stale fragments so yt-dlp can write a fresh merged file."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    for p in base.parent.glob(base.name + "*"):
+        try:
+            if p.is_file():
+                p.unlink()
+        except OSError:
+            pass
+
+
 def _move_download_to_output(base: Path, output_path: Path) -> bool:
-    """yt-dlp uses outtmpl base.%(ext)s; merged file is usually base.mp4."""
+    """Find the file yt-dlp wrote for this basename (merged output may differ slightly)."""
     if output_path.exists() and output_path.stat().st_size > 0:
         return True
     for ext in (".mp4", ".mkv", ".webm", ".mov"):
@@ -66,7 +77,33 @@ def _move_download_to_output(base: Path, output_path: Path) -> bool:
             if cand.resolve() != output_path.resolve():
                 cand.replace(output_path)
             return True
-    return False
+    # Glob: rare cases where the merged name does not match base.ext exactly
+    candidates: list[Path] = []
+    for p in base.parent.glob(base.name + "*"):
+        if not p.is_file() or p.stat().st_size == 0:
+            continue
+        if p.suffix.lower() in (".part",) or p.name.endswith(".ytdl"):
+            continue
+        if p.suffix.lower() in (".mp4", ".mkv", ".webm", ".mov", ".m4a"):
+            candidates.append(p)
+    if not candidates:
+        return False
+    mp4s = [p for p in candidates if p.suffix.lower() == ".mp4"]
+    if not mp4s:
+        return False
+    chosen = max(mp4s, key=lambda x: x.stat().st_size)
+    if chosen.resolve() == output_path.resolve():
+        return True
+    chosen.replace(output_path)
+    return output_path.exists() and output_path.stat().st_size > 0
+
+
+def _list_temp_debug(base: Path) -> str:
+    try:
+        names = [p.name for p in base.parent.glob(base.name + "*")][:15]
+        return ", ".join(names) if names else "(no matching files)"
+    except OSError:
+        return "(could not list)"
 
 
 def download_video(url: str, output_path: Path) -> Tuple[bool, str | None]:
@@ -76,25 +113,47 @@ def download_video(url: str, output_path: Path) -> Tuple[bool, str | None]:
     to a Netscape cookies.txt exported while logged in.
     """
     base = output_path.with_suffix("")
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    _prepare_temp_base(base, output_path)
 
     cookie_file = (os.getenv("YTDLP_COOKIE_FILE") or os.getenv("INSTAGRAM_COOKIES_FILE") or "").strip()
+    if cookie_file and ("full/path" in cookie_file or "/path/to" in cookie_file):
+        return (
+            False,
+            "YTDLP_COOKIE_FILE still looks like a placeholder. Replace it in .env with the real "
+            "absolute path to cookies.txt on your Hostinger server, then restart the app.",
+        )
     if cookie_file and not Path(cookie_file).is_file():
         return (
             False,
             f"Cookie file not found at {cookie_file!r}. Upload cookies.txt to your Hostinger app "
             "folder and set YTDLP_COOKIE_FILE to the full server path (see cookies/README.txt).",
         )
+
+    is_instagram = "instagram.com" in url.lower()
+    if is_instagram and not cookie_file:
+        return (
+            False,
+            "Instagram requires a Netscape cookies.txt on the server. Add YTDLP_COOKIE_FILE=/absolute/path/cookies.txt "
+            "to your Hostinger .env (not n8n), upload the file from a logged-in browser session, restart the API.",
+        )
+
+    # Instagram reels: single progressive stream is common — "best" is more reliable than merge-only selectors
+    if is_instagram:
+        vid_format = "best"
+    else:
+        vid_format = "bestvideo*+bestaudio/bestvideo+bestaudio/best[ext=mp4]/best"
+
     options: dict = {
         "outtmpl": str(base) + ".%(ext)s",
-        "format": "bestvideo*+bestaudio/bestvideo+bestaudio/best",
+        "format": vid_format,
         "merge_output_format": "mp4",
         "quiet": True,
         "no_warnings": True,
         "noprogress": True,
-        "socket_timeout": 90,
+        "socket_timeout": 120,
         "retries": 5,
         "fragment_retries": 5,
+        "extractor_args": {"instagram": {"webpage_download_timeout": 120}},
         "http_headers": {
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -125,11 +184,17 @@ def download_video(url: str, output_path: Path) -> Tuple[bool, str | None]:
 
     if _move_download_to_output(base, output_path):
         return True, None
-    return (
-        False,
-        "No video file was written after download. For Instagram reels, set YTDLP_COOKIE_FILE "
-        "to a cookies.txt file from a logged-in browser session.",
+    dbg = _list_temp_debug(base)
+    hint = (
+        f"No .mp4 produced after yt-dlp (temp files: {dbg}). For Instagram: use a fresh cookies.txt, "
+        f"confirm YTDLP_COOKIE_FILE path on Hostinger is readable by the app, and run `pip install -U yt-dlp`. "
     )
+    if is_instagram and cookie_file:
+        hint += (
+            "If cookies are set but this persists, re-export cookies while logged into instagram.com "
+            "in the same browser profile."
+        )
+    return (False, hint)
 
 def download_from_sheet(
     sheet_url: str = SHEET_URL,

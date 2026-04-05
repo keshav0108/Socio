@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import uuid
 import importlib.util
 from pathlib import Path
 
@@ -147,9 +148,8 @@ async def _clip_download_response(
         )
 
     ytdlp_module = load_ytdlp_module()
-    fd, tmp_path = tempfile.mkstemp(suffix=".mp4")
-    os.close(fd)
-    path = Path(tmp_path)
+    # Do not pre-create an empty .mp4 — that can confuse yt-dlp/merger; use a unique path only.
+    path = Path(tempfile.gettempdir()) / f"socio_clip_{uuid.uuid4().hex}.mp4"
 
     def _cleanup() -> None:
         try:

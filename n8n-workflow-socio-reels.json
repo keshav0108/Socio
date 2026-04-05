@@ -1,27 +1,22 @@
 {
-  "name": "Socio: Reel link → API → Drive (video/raw) → In progress",
+  "name": "Socio: Sheet → Fetch MP4 → Drive → Sheet",
+  "description": "Prod URL is static — n8n Cloud blocks $env in expressions. For local API, temporarily set URL to http://127.0.0.1:8001/clip_download",
   "nodes": [
     {
       "parameters": {
-        "pollTimes": {
-          "item": [{ "mode": "everyMinute" }]
-        },
+        "pollTimes": { "item": [{ "mode": "everyMinute" }] },
         "documentId": {
           "__rl": true,
           "value": "1bjUzMcmFiejlVv_N2qFSCBUOYM4JgsG9ZGXMb482-6Y",
           "mode": "list"
         },
-        "sheetName": {
-          "__rl": true,
-          "value": 4223526,
-          "mode": "list"
-        },
+        "sheetName": { "__rl": true, "value": 4223526, "mode": "list" },
         "options": {}
       },
-      "name": "Google Sheets Trigger2",
+      "name": "Sheet new reel row",
       "type": "n8n-nodes-base.googleSheetsTrigger",
       "typeVersion": 1,
-      "position": [-576, -176]
+      "position": [-800, 0]
     },
     {
       "parameters": {
@@ -31,63 +26,46 @@
         "sendHeaders": true,
         "specifyHeaders": "keypair",
         "headerParameters": {
-          "parameters": [
-            {
-              "name": "api-key",
-              "value": "={{ $env.SOCIO_API_KEY }}"
-            }
-          ]
+          "parameters": [{ "name": "api-key", "value": "key789" }]
         },
         "sendBody": true,
         "contentType": "json",
         "specifyBody": "keypair",
         "bodyParameters": {
-          "parameters": [
-            {
-              "name": "url",
-              "value": "={{ $json.reel_url }}"
-            }
-          ]
+          "parameters": [{ "name": "url", "value": "={{ $json.reel_url }}" }]
         },
         "options": {
           "response": {
             "response": {
               "responseFormat": "file",
-              "outputPropertyName": "data"
+              "outputPropertyName": "raw_mp4"
             }
           }
         }
       },
-      "name": "Download Video (Socio API)",
+      "name": "HTTP fetch reel MP4",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
-      "position": [-256, -176],
-      "notesInFlow": true,
-      "notes": "URL must be .../clip_download OR (after API deploy) just ...sslip.io/ with POST — same as /clip_download. Add Header: Name api-key, Value = your API_KEYS secret. Body: JSON fields url = reel URL. If error says file missing: set YTDLP_COOKIE_FILE on the server for Instagram."
+      "position": [-480, 0]
     },
     {
       "parameters": {
         "operation": "upload",
-        "inputDataFieldName": "data",
-        "name": "={{ $('Google Sheets Trigger2').item.json.ID }}.mp4",
-        "driveId": {
-          "__rl": true,
-          "value": "My Drive",
-          "mode": "list"
-        },
+        "inputDataFieldName": "raw_mp4",
+        "name": "={{ $('Sheet new reel row').item.json.ID }}.mp4",
+        "driveId": { "__rl": true, "value": "My Drive", "mode": "list" },
         "folderId": {
           "__rl": true,
           "value": "197FhyyD6c3pTZJ7n8Clkw7q6XlnSLxLj",
           "mode": "list",
-          "cachedResultName": "video/raw",
-          "cachedResultUrl": "https://drive.google.com/drive/folders/197FhyyD6c3pTZJ7n8Clkw7q6XlnSLxLj"
+          "cachedResultName": "video/raw"
         },
         "options": {}
       },
-      "name": "Upload to Drive (video/raw)",
+      "name": "Drive upload video to raw",
       "type": "n8n-nodes-base.googleDrive",
       "typeVersion": 3,
-      "position": [64, -176]
+      "position": [-160, 0]
     },
     {
       "parameters": {
@@ -97,18 +75,14 @@
           "value": "1bjUzMcmFiejlVv_N2qFSCBUOYM4JgsG9ZGXMb482-6Y",
           "mode": "list"
         },
-        "sheetName": {
-          "__rl": true,
-          "value": 4223526,
-          "mode": "list"
-        },
+        "sheetName": { "__rl": true, "value": 4223526, "mode": "list" },
         "columns": {
           "mappingMode": "defineBelow",
           "value": {
-            "ID": "={{ $('Google Sheets Trigger2').item.json.ID }}",
+            "ID": "={{ $('Sheet new reel row').item.json.ID }}",
             "processing_status": "In progress",
             "raw_gdrive_url": "={{ $json.webViewLink }}",
-            "row_number": "={{ $('Google Sheets Trigger2').item.json.row_number }}"
+            "row_number": "={{ $('Sheet new reel row').item.json.row_number }}"
           },
           "matchingColumns": ["ID"],
           "schema": [],
@@ -117,53 +91,28 @@
         },
         "options": {}
       },
-      "name": "Update Sheet (In progress)",
+      "name": "Sheet update link and status",
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
-      "position": [384, -176]
+      "position": [160, 0]
     }
   ],
   "connections": {
-    "Google Sheets Trigger2": {
+    "Sheet new reel row": {
       "main": [
-        [
-          {
-            "node": "Download Video (Socio API)",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [{ "node": "HTTP fetch reel MP4", "type": "main", "index": 0 }]
       ]
     },
-    "Download Video (Socio API)": {
+    "HTTP fetch reel MP4": {
       "main": [
-        [
-          {
-            "node": "Upload to Drive (video/raw)",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [{ "node": "Drive upload video to raw", "type": "main", "index": 0 }]
       ]
     },
-    "Upload to Drive (video/raw)": {
+    "Drive upload video to raw": {
       "main": [
-        [
-          {
-            "node": "Update Sheet (In progress)",
-            "type": "main",
-            "index": 0
-          }
-        ]
+        [{ "node": "Sheet update link and status", "type": "main", "index": 0 }]
       ]
     }
   },
-  "pinData": {},
-  "meta": {
-    "templateCredsSetupCompleted": false
-  },
-  "settings": {
-    "executionOrder": "v1",
-    "binaryMode": "separate"
-  }
+  "settings": { "executionOrder": "v1", "binaryMode": "separate" }
 }
