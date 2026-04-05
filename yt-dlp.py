@@ -78,7 +78,13 @@ def download_video(url: str, output_path: Path) -> Tuple[bool, str | None]:
     base = output_path.with_suffix("")
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
-    cookie_file = os.getenv("YTDLP_COOKIE_FILE") or os.getenv("INSTAGRAM_COOKIES_FILE")
+    cookie_file = (os.getenv("YTDLP_COOKIE_FILE") or os.getenv("INSTAGRAM_COOKIES_FILE") or "").strip()
+    if cookie_file and not Path(cookie_file).is_file():
+        return (
+            False,
+            f"Cookie file not found at {cookie_file!r}. Upload cookies.txt to your Hostinger app "
+            "folder and set YTDLP_COOKIE_FILE to the full server path (see cookies/README.txt).",
+        )
     options: dict = {
         "outtmpl": str(base) + ".%(ext)s",
         "format": "bestvideo*+bestaudio/bestvideo+bestaudio/best",
