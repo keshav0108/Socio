@@ -6,15 +6,30 @@ import uuid
 import importlib.util
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request, Security
 from fastapi.responses import FileResponse
+from fastapi.security import APIKeyHeader
 from starlette.background import BackgroundTask
 
 from extraction import extract_video
 from putup import process_video
 from config import API_KEYS, is_valid_api_key
 
-app = FastAPI()
+app = FastAPI(
+    openapi_tags=[
+        {
+            "name": "clip-download",
+            "description": (
+                "Download a single reel/video as MP4 (streamed from temp; not saved under videos/raw).\n\n"
+                "**API key** — If `API_KEYS` is set in `.env`, send one of:\n"
+                "- Header `api-key`\n"
+                "- Header `x-api-key`\n"
+                "- Header `Authorization: Bearer <key>`\n\n"
+                "Omitting a valid key returns **401**. The GET route without `?url=` returns help JSON and does not require a key."
+            ),
+        },
+    ],
+)
 
 RAW_DIR = "videos/raw"
 CROPPED_DIR = "videos/cropped"
@@ -42,6 +57,24 @@ def get_api_key(request: Request) -> str | None:
     if auth and auth.lower().startswith("bearer "):
         return auth[7:].strip()
     return None
+
+
+CLIP_API_KEY = APIKeyHeader(
+    name="api-key",
+    auto_error=False,
+    description=(
+        "Required when API_KEYS is set in .env. "
+        "Alternatives: x-api-key header, or Authorization: Bearer <key>."
+    ),
+)
+
+
+async def clip_download_api_key(
+    request: Request,
+    _openapi_api_key: str | None = Security(CLIP_API_KEY),
+) -> str | None:
+    """Same resolution as get_api_key; Security() registers the api-key scheme in OpenAPI."""
+    return get_api_key(request)
 
 
 def load_ytdlp_module():
@@ -178,19 +211,55 @@ async def _clip_download_response(
     )
 
 
-@app.post("/clip_download")
+@app.get(
+    "/clip_download",
+    tags=["clip-download"],
+    responses={401: {"description": "Invalid or missing API key (when API_KEYS is set)"}},
+)
+async def clip_download_get(
+    request: Request,
+    api_key: str | None = Depends(clip_download_api_key),
+    url: str | None = Query(None, description="Reel URL — if omitted, returns usage JSON (no auth required)"),
+):
+    """GET avoids 405 in the browser. With ?url=, same as POST (api-key header if API_KEYS is set)."""
+    if not url or not url.strip():
+        out = {
+            "message": "clip_download expects POST (JSON {\"url\": \"...\"}) or GET with query ?url=",
+            "open_docs": "/docs",
+            "try_get_example": "/clip_download?url=https%3A%2F%2Fwww.instagram.com%2Freel%2FYOUR_ID%2F",
+        }
+        if API_KEYS:
+            out["auth"] = (
+                "When API_KEYS is set in .env, POST/GET with ?url= requires header "
+                "api-key, x-api-key, or Authorization: Bearer <key>"
+            )
+        else:
+            out["auth"] = "No API key required (API_KEYS empty)"
+        return out
+    return await _clip_download_response(request, api_key, url.strip())
+
+
+@app.post(
+    "/clip_download",
+    tags=["clip-download"],
+    responses={401: {"description": "Invalid or missing API key (when API_KEYS is set)"}},
+)
 async def clip_download(
     request: Request,
-    api_key: str | None = Depends(get_api_key),
+    api_key: str | None = Depends(clip_download_api_key),
     url: str | None = Query(None, description="Reel or video URL (optional if sent in body)"),
 ):
     return await _clip_download_response(request, api_key, url)
 
 
-@app.post("/")
+@app.post(
+    "/",
+    tags=["clip-download"],
+    responses={401: {"description": "Invalid or missing API key (when API_KEYS is set)"}},
+)
 async def clip_download_at_root(
     request: Request,
-    api_key: str | None = Depends(get_api_key),
+    api_key: str | None = Depends(clip_download_api_key),
     url: str | None = Query(None, description="Same as POST /clip_download if the HTTP client URL omits /clip_download"),
 ):
     """Same behavior as POST /clip_download — n8n sometimes has only the host root in the URL field."""

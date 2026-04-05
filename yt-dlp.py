@@ -106,6 +106,26 @@ def _list_temp_debug(base: Path) -> str:
         return "(could not list)"
 
 
+def _looks_like_windows_drive_path(s: str) -> bool:
+    s = s.strip()
+    return len(s) >= 3 and s[0].isalpha() and s[1] == ":" and s[2] in ("/", "\\")
+
+
+def _resolve_cookie_path(raw: str) -> Path:
+    """Path Python can open. When the API runs in WSL but .env uses C:\\..., map to /mnt/c/... if present."""
+    s = raw.strip()
+    p = Path(s)
+    if p.is_file():
+        return p
+    if os.name == "posix" and _looks_like_windows_drive_path(s):
+        drive = s[0].lower()
+        rest = s[2:].replace("\\", "/").strip("/")
+        wsl = Path(f"/mnt/{drive}/{rest}")
+        if wsl.is_file():
+            return wsl
+    return p
+
+
 def download_video(url: str, output_path: Path) -> Tuple[bool, str | None]:
     """
     Download media to output_path (should end with .mp4).
@@ -115,26 +135,38 @@ def download_video(url: str, output_path: Path) -> Tuple[bool, str | None]:
     base = output_path.with_suffix("")
     _prepare_temp_base(base, output_path)
 
-    cookie_file = (os.getenv("YTDLP_COOKIE_FILE") or os.getenv("INSTAGRAM_COOKIES_FILE") or "").strip()
-    if cookie_file and ("full/path" in cookie_file or "/path/to" in cookie_file):
+    cookie_raw = (os.getenv("YTDLP_COOKIE_FILE") or os.getenv("INSTAGRAM_COOKIES_FILE") or "").strip()
+    if cookie_raw and ("full/path" in cookie_raw or "/path/to" in cookie_raw):
         return (
             False,
-            "YTDLP_COOKIE_FILE still looks like a placeholder. Replace it in .env with the real "
-            "absolute path to cookies.txt on your Hostinger server, then restart the app.",
-        )
-    if cookie_file and not Path(cookie_file).is_file():
-        return (
-            False,
-            f"Cookie file not found at {cookie_file!r}. Upload cookies.txt to your Hostinger app "
-            "folder and set YTDLP_COOKIE_FILE to the full server path (see cookies/README.txt).",
+            "YTDLP_COOKIE_FILE still looks like a placeholder. Set it in .env to the real absolute path "
+            "to cookies.txt on the machine running this API (local or server), then restart the app.",
         )
 
+    cookie_path: Path | None = None
+    if cookie_raw:
+        cookie_path = _resolve_cookie_path(cookie_raw)
+        if not cookie_path.is_file():
+            wsl_hint = ""
+            if os.name == "posix" and _looks_like_windows_drive_path(cookie_raw):
+                drive = cookie_raw.strip()[0].lower()
+                rest = cookie_raw.strip()[2:].replace("\\", "/").strip("/")
+                wsl_hint = (
+                    f" If uvicorn runs in WSL, either use the Linux path "
+                    f"(e.g. /mnt/{drive}/{rest}) or ensure the file exists under /mnt/{drive}/."
+                )
+            return (
+                False,
+                f"Cookie file not found at {cookie_raw!r}.{wsl_hint} "
+                "Put cookies.txt there or fix YTDLP_COOKIE_FILE (see cookies/README.txt).",
+            )
+
     is_instagram = "instagram.com" in url.lower()
-    if is_instagram and not cookie_file:
+    if is_instagram and not cookie_raw:
         return (
             False,
-            "Instagram requires a Netscape cookies.txt on the server. Add YTDLP_COOKIE_FILE=/absolute/path/cookies.txt "
-            "to your Hostinger .env (not n8n), upload the file from a logged-in browser session, restart the API.",
+            "Instagram requires a Netscape cookies.txt. Add YTDLP_COOKIE_FILE=/absolute/path/cookies.txt "
+            "to the .env next to api.py (not n8n), use a file exported while logged into instagram.com, restart the API.",
         )
 
     # Instagram reels: single progressive stream is common — "best" is more reliable than merge-only selectors
@@ -163,8 +195,8 @@ def download_video(url: str, output_path: Path) -> Tuple[bool, str | None]:
             "Accept-Language": "en-US,en;q=0.9",
         },
     }
-    if cookie_file and Path(cookie_file).is_file():
-        options["cookiefile"] = cookie_file
+    if cookie_path is not None and cookie_path.is_file():
+        options["cookiefile"] = str(cookie_path)
 
     try:
         with yt_dlp.YoutubeDL(options) as ydl:
@@ -178,7 +210,7 @@ def download_video(url: str, output_path: Path) -> Tuple[bool, str | None]:
         ):
             hint = (
                 " For Instagram, export cookies (e.g. browser extension → cookies.txt) and set "
-                "YTDLP_COOKIE_FILE in your server .env to that file path."
+                "YTDLP_COOKIE_FILE in .env to that file’s absolute path on this machine."
             )
         return False, msg + hint
 
@@ -187,9 +219,9 @@ def download_video(url: str, output_path: Path) -> Tuple[bool, str | None]:
     dbg = _list_temp_debug(base)
     hint = (
         f"No .mp4 produced after yt-dlp (temp files: {dbg}). For Instagram: use a fresh cookies.txt, "
-        f"confirm YTDLP_COOKIE_FILE path on Hostinger is readable by the app, and run `pip install -U yt-dlp`. "
+        f"confirm YTDLP_COOKIE_FILE is readable by the API process, and run `pip install -U yt-dlp`. "
     )
-    if is_instagram and cookie_file:
+    if is_instagram and cookie_raw:
         hint += (
             "If cookies are set but this persists, re-export cookies while logged into instagram.com "
             "in the same browser profile."
