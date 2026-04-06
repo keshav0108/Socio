@@ -2,9 +2,3 @@ venv/
 __pycache__/
 *.pyc
 .env
-# Browser cookie exports (often contain many sites' secrets — never commit)
-
-# Real Instagram cookie exports (never commit — use cookies.example.txt as template)
-cookies/instagram_cookies.txt
-cookies/cookies.txt
-*.cookies.txt
