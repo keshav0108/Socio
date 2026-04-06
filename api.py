@@ -194,12 +194,12 @@ async def _clip_download_response(
         ok, err = ytdlp_module.download_video(reel_url, path)
     except Exception as exc:
         _cleanup()
-        raise HTTPException(status_code=400, detail=f"Download failed: {exc}") from exc
+        raise HTTPException(status_code=500, detail=f"Download failed: {exc}") from exc
 
     if not ok or not path.exists():
         _cleanup()
         raise HTTPException(
-            status_code=400,
+            status_code=500,
             detail=err or "Download failed or file missing",
         )
 

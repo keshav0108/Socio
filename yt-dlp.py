@@ -14,10 +14,12 @@ import yt_dlp
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1bjUzMcmFiejlVv_N2qFSCBUOYM4JgsG9ZGXMb482-6Y/edit?usp=sharing"
 OUTPUT_DIR = Path("videos/raw")
 LINKS_COLUMN = "Links"
-# Netscape cookies.txt for yt-dlp (Instagram). Docker: /cookies.txt (see Dockerfile). Local: repo root if absent.
-YTDLP_COOKIE_FILE = (
-    Path("/cookies.txt") if Path("/cookies.txt").is_file() else Path(__file__).resolve().parent / "cookies.txt"
-)
+# Netscape cookies.txt for yt-dlp (Instagram).
+# Keep pathing in code only (no .env needed):
+# - Docker path: /cookies.txt (from Dockerfile COPY)
+# - Local fallback: project-root cookies.txt
+# If needed, replace this constant with an absolute path directly in this file.
+YTDLP_COOKIE_FILE = Path("/cookies.txt") if Path("/cookies.txt").is_file() else Path(__file__).resolve().parent / "cookies.txt"
 
 def build_csv_export_url(sheet_url: str) -> str:
     parsed = urlparse(sheet_url)

@@ -46,7 +46,38 @@
       "name": "HTTP fetch reel MP4",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
-      "position": [-480, 0]
+      "position": [-480, 0],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "f0e30b01-d45e-4bd9-8b78-a3a0f5874fbe",
+              "leftValue": "={{ !!$binary.raw_mp4 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "name": "IF fetch succeeded",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-320, 0]
     },
     {
       "parameters": {
@@ -105,7 +136,13 @@
     },
     "HTTP fetch reel MP4": {
       "main": [
-        [{ "node": "Drive upload video to raw", "type": "main", "index": 0 }]
+        [{ "node": "IF fetch succeeded", "type": "main", "index": 0 }]
+      ]
+    },
+    "IF fetch succeeded": {
+      "main": [
+        [{ "node": "Drive upload video to raw", "type": "main", "index": 0 }],
+        []
       ]
     },
     "Drive upload video to raw": {
