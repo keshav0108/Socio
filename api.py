@@ -106,6 +106,19 @@ def _safe_video_basename(filename: str) -> str:
     return safe_name
 
 
+@app.get("/extraction", tags=["pipeline"])
+def extraction_api_help():
+    """GET returns usage JSON. Extraction itself is POST-only (browser GET would otherwise be 405)."""
+    return {
+        "message": "/extraction is POST only — not callable in the browser address bar.",
+        "how": (
+            "POST multipart/form-data with field `filename` (e.g. clip.mp4) and optional binary field `file` "
+            "(raw video). Or POST with query ?filename=clip.mp4 if `videos/raw/clip.mp4` already exists on the server."
+        ),
+        "open_docs": "/docs",
+    }
+
+
 @app.post("/extraction", tags=["pipeline"])
 def extraction_api(
     request: Request,
@@ -154,6 +167,20 @@ def extraction_api(
         media_type="video/mp4",
         filename=f"cropped_{safe_name}",
     )
+
+
+@app.get("/process", tags=["pipeline"])
+def process_api_help():
+    """GET returns usage JSON. Processing itself is POST-only."""
+    return {
+        "message": "/process is POST only — not callable in the browser address bar.",
+        "how": (
+            "POST multipart/form-data or query: `filename`, `brand_name`, `title`. "
+            "Requires `videos/cropped/cropped_{filename}` to exist (run /extraction first). "
+            "Or use POST /process_full with `file` + fields for a one-shot raw→final run."
+        ),
+        "open_docs": "/docs",
+    }
 
 
 @app.post("/process", tags=["pipeline"])
