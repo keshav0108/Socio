@@ -406,6 +406,9 @@ def process_video(input_path, output_path, brand_name=None, title=None):
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    if isinstance(brand_name, str):
+        brand_name = brand_name.strip()
+
     if not brand_name:
         if Path("brand.json").exists():
             default_cfg = json.loads(Path("brand.json").read_text())

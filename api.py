@@ -101,9 +101,15 @@ def process_video_api(
 ):
     verify_key(api_key)
 
-    input_path = os.path.join(RAW_DIR, filename)
-    cropped_path = os.path.join(CROPPED_DIR, f"cropped_{filename}")
-    final_path = os.path.join(FINAL_DIR, f"final_{filename}")
+    safe_name = Path(filename).name.strip()
+    if not safe_name:
+        raise HTTPException(status_code=400, detail="filename is required")
+    if "." not in safe_name:
+        safe_name = f"{safe_name}.mp4"
+
+    input_path = os.path.join(RAW_DIR, safe_name)
+    cropped_path = os.path.join(CROPPED_DIR, f"cropped_{safe_name}")
+    final_path = os.path.join(FINAL_DIR, f"final_{safe_name}")
 
     if not os.path.exists(input_path):
         raise HTTPException(status_code=404, detail="File not found")

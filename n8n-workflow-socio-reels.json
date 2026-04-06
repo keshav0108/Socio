@@ -38,7 +38,8 @@
           "response": {
             "response": {
               "responseFormat": "file",
-              "outputPropertyName": "raw_mp4"
+              "outputPropertyName": "raw_mp4",
+              "neverError": true
             }
           }
         }
@@ -81,6 +82,7 @@
     },
     {
       "parameters": {
+        "resource": "file",
         "operation": "upload",
         "inputDataFieldName": "raw_mp4",
         "name": "={{ $('Sheet new reel row').item.json.ID }}.mp4",
@@ -100,7 +102,8 @@
     },
     {
       "parameters": {
-        "operation": "update",
+        "resource": "sheet",
+        "operation": "appendOrUpdate",
         "documentId": {
           "__rl": true,
           "value": "1bjUzMcmFiejlVv_N2qFSCBUOYM4JgsG9ZGXMb482-6Y",
@@ -112,8 +115,7 @@
           "value": {
             "ID": "={{ $('Sheet new reel row').item.json.ID }}",
             "processing_status": "In progress",
-            "raw_gdrive_url": "={{ $json.webViewLink }}",
-            "row_number": "={{ $('Sheet new reel row').item.json.row_number }}"
+            "raw_gdrive_url": "={{ $json.webViewLink }}"
           },
           "matchingColumns": ["ID"],
           "schema": [],
