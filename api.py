@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import os
+import shutil
 import tempfile
 import uuid
 import importlib.util
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request, Security
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Security, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.security import APIKeyHeader
 from starlette.background import BackgroundTask
@@ -94,12 +95,33 @@ def home():
 
 @app.post("/process")
 def process_video_api(
-    filename: str,
-    brand_name: str | None = None,
-    title: str | None = None,
+    request: Request,
+    filename: str | None = Form(None),
+    brand_name: str | None = Form(None),
+    title: str | None = Form(None),
+    file: UploadFile | None = File(None),
     api_key: str | None = Depends(get_api_key),
 ):
     verify_key(api_key)
+
+    # Debug-friendly fallback: allow query params too, but prefer multipart form fields.
+    if not filename:
+        filename = request.query_params.get("filename")
+    if not brand_name:
+        brand_name = request.query_params.get("brand_name")
+    if not title:
+        title = request.query_params.get("title")
+
+    if not filename:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "filename is required",
+                "hint": "Send multipart/form-data with fields: file, filename, brand_name, title",
+                "content_type": request.headers.get("content-type"),
+                "query_keys": list(request.query_params.keys()),
+            },
+        )
 
     safe_name = Path(filename).name.strip()
     if not safe_name:
@@ -111,8 +133,19 @@ def process_video_api(
     cropped_path = os.path.join(CROPPED_DIR, f"cropped_{safe_name}")
     final_path = os.path.join(FINAL_DIR, f"final_{safe_name}")
 
-    if not os.path.exists(input_path):
-        raise HTTPException(status_code=404, detail="File not found")
+    # If a file is posted from n8n, write it directly as the raw input file.
+    if file is not None:
+        with open(input_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+    elif not os.path.exists(input_path):
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "File not found",
+                "input_path": input_path,
+                "hint": "Either upload multipart field `file` or ensure raw file exists on server",
+            },
+        )
 
     # Step 1: Extract
     extract_video(input_path, cropped_path)
@@ -120,12 +153,11 @@ def process_video_api(
     # Step 2: Putup (9:16 + branding + custom title)
     process_video(cropped_path, final_path, brand_name=brand_name, title=title)
 
-    return {
-        "message": "Processing complete",
-        "final_video": final_path,
-        "brand_name": brand_name,
-        "title": title,
-    }
+    return FileResponse(
+        final_path,
+        media_type="video/mp4",
+        filename=f"final_{safe_name}",
+    )
 
 
 async def _parse_url_from_request(request: Request, url_query: str | None) -> str | None:
