@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import os
 import shutil
-import tempfile
 import uuid
 import importlib.util
 from pathlib import Path
@@ -10,8 +9,6 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Security, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.security import APIKeyHeader
-from starlette.background import BackgroundTask
-
 from extraction import extract_video
 from putup import process_video
 from config import API_KEYS, is_valid_api_key
@@ -21,12 +18,19 @@ app = FastAPI(
         {
             "name": "clip-download",
             "description": (
-                "Download a single reel/video as MP4 (streamed from temp; not saved under videos/raw).\n\n"
+                "Download a reel/video to `videos/raw/` and return the MP4 (same basename for `/extraction` → `/process`).\n\n"
                 "**API key** — If `API_KEYS` is set in `.env`, send one of:\n"
                 "- Header `api-key`\n"
                 "- Header `x-api-key`\n"
                 "- Header `Authorization: Bearer <key>`\n\n"
                 "Omitting a valid key returns **401**. The GET route without `?url=` returns help JSON and does not require a key."
+            ),
+        },
+        {
+            "name": "pipeline",
+            "description": (
+                "Three-step pipeline: **clip_download** (url → raw) → **extraction** (raw → cropped) → "
+                "**process** (cropped → final). Use the same `filename` for all three."
             ),
         },
     ],
@@ -93,8 +97,120 @@ def home():
     return {"status": "API Running 🚀"}
 
 
-@app.post("/process")
+def _safe_video_basename(filename: str) -> str:
+    safe_name = Path(filename).name.strip()
+    if not safe_name:
+        raise HTTPException(status_code=400, detail="filename is required")
+    if "." not in safe_name:
+        safe_name = f"{safe_name}.mp4"
+    return safe_name
+
+
+@app.post("/extraction", tags=["pipeline"])
+def extraction_api(
+    request: Request,
+    filename: str | None = Form(None),
+    file: UploadFile | None = File(None),
+    api_key: str | None = Depends(get_api_key),
+):
+    """Raw (`videos/raw/{filename}`) → cropped MP4 (`videos/cropped/cropped_{filename}`)."""
+    verify_key(api_key)
+
+    if not filename:
+        filename = request.query_params.get("filename")
+    if not filename:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "filename is required",
+                "hint": "Multipart: filename (+ optional file). Same basename as clip_download.",
+            },
+        )
+
+    safe_name = _safe_video_basename(filename)
+    input_path = os.path.join(RAW_DIR, safe_name)
+    cropped_path = os.path.join(CROPPED_DIR, f"cropped_{safe_name}")
+
+    if file is not None:
+        with open(input_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+    elif not os.path.exists(input_path):
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "Raw file not found",
+                "input_path": input_path,
+                "hint": "Run clip_download first or POST multipart field `file` with `filename`.",
+            },
+        )
+
+    try:
+        extract_video(input_path, cropped_path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return FileResponse(
+        cropped_path,
+        media_type="video/mp4",
+        filename=f"cropped_{safe_name}",
+    )
+
+
+@app.post("/process", tags=["pipeline"])
 def process_video_api(
+    request: Request,
+    filename: str | None = Form(None),
+    brand_name: str | None = Form(None),
+    title: str | None = Form(None),
+    api_key: str | None = Depends(get_api_key),
+):
+    """Cropped (`videos/cropped/cropped_{filename}`) → final MP4 (`videos/final/final_{filename}`)."""
+    verify_key(api_key)
+
+    if not filename:
+        filename = request.query_params.get("filename")
+    if not brand_name:
+        brand_name = request.query_params.get("brand_name")
+    if not title:
+        title = request.query_params.get("title")
+
+    if not filename:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "filename is required",
+                "hint": "Same basename as clip_download / extraction (e.g. reel.mp4).",
+            },
+        )
+
+    safe_name = _safe_video_basename(filename)
+    cropped_path = os.path.join(CROPPED_DIR, f"cropped_{safe_name}")
+    final_path = os.path.join(FINAL_DIR, f"final_{safe_name}")
+
+    if not os.path.exists(cropped_path):
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "Cropped file not found",
+                "expected_path": cropped_path,
+                "hint": "Run /extraction first so cropped_{filename} exists.",
+            },
+        )
+
+    try:
+        process_video(cropped_path, final_path, brand_name=brand_name, title=title)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    return FileResponse(
+        final_path,
+        media_type="video/mp4",
+        filename=f"final_{safe_name}",
+    )
+
+
+@app.post("/process_full", tags=["pipeline"])
+def process_full_api(
     request: Request,
     filename: str | None = Form(None),
     brand_name: str | None = Form(None),
@@ -102,9 +218,9 @@ def process_video_api(
     file: UploadFile | None = File(None),
     api_key: str | None = Depends(get_api_key),
 ):
+    """One-shot: raw → extract → putup (same as the former single `/process`)."""
     verify_key(api_key)
 
-    # Debug-friendly fallback: allow query params too, but prefer multipart form fields.
     if not filename:
         filename = request.query_params.get("filename")
     if not brand_name:
@@ -123,17 +239,11 @@ def process_video_api(
             },
         )
 
-    safe_name = Path(filename).name.strip()
-    if not safe_name:
-        raise HTTPException(status_code=400, detail="filename is required")
-    if "." not in safe_name:
-        safe_name = f"{safe_name}.mp4"
-
+    safe_name = _safe_video_basename(filename)
     input_path = os.path.join(RAW_DIR, safe_name)
     cropped_path = os.path.join(CROPPED_DIR, f"cropped_{safe_name}")
     final_path = os.path.join(FINAL_DIR, f"final_{safe_name}")
 
-    # If a file is posted from n8n, write it directly as the raw input file.
     if file is not None:
         with open(input_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
@@ -147,10 +257,7 @@ def process_video_api(
             },
         )
 
-    # Step 1: Extract
     extract_video(input_path, cropped_path)
-
-    # Step 2: Putup (9:16 + branding + custom title)
     process_video(cropped_path, final_path, brand_name=brand_name, title=title)
 
     return FileResponse(
@@ -160,82 +267,108 @@ def process_video_api(
     )
 
 
-async def _parse_url_from_request(request: Request, url_query: str | None) -> str | None:
-    if url_query and url_query.strip():
-        return url_query.strip()
+async def _parse_clip_download_fields(
+    request: Request,
+    url_query: str | None,
+    filename_query: str | None,
+) -> tuple[str | None, str | None]:
+    """Parse url + optional filename from query, form, or JSON (single body read)."""
+    url = (url_query or "").strip() or None
+    filename = (filename_query or "").strip() or None
+    if not filename:
+        qf = request.query_params.get("filename")
+        if qf and str(qf).strip():
+            filename = str(qf).strip()
+
+    need_url = not url
+    need_filename = not filename
+    if not need_url and not need_filename:
+        return url, filename
 
     ct = (request.headers.get("content-type") or "").lower()
 
     if "multipart" in ct or "application/x-www-form-urlencoded" in ct:
         try:
             form = await request.form()
-            u = form.get("url")
-            return str(u).strip() if u else None
+            if need_url:
+                u = form.get("url")
+                url = str(u).strip() if u else url
+            if need_filename:
+                fn = form.get("filename")
+                filename = str(fn).strip() if fn else filename
         except Exception:
-            return None
+            pass
+        return url, filename
 
     if "application/json" in ct:
         try:
             data = await request.json()
-            if isinstance(data, dict) and data.get("url"):
-                return str(data["url"]).strip()
+            if isinstance(data, dict):
+                if need_url and data.get("url"):
+                    url = str(data["url"]).strip()
+                if need_filename and data.get("filename"):
+                    filename = str(data["filename"]).strip()
         except Exception:
             pass
-        return None
+        return url, filename
 
-    # Missing or generic Content-Type: try JSON then form (n8n varies by node settings)
     try:
         data = await request.json()
-        if isinstance(data, dict) and data.get("url"):
-            return str(data["url"]).strip()
+        if isinstance(data, dict):
+            if need_url and data.get("url"):
+                url = str(data["url"]).strip()
+            if need_filename and data.get("filename"):
+                filename = str(data["filename"]).strip()
     except Exception:
         pass
-    try:
-        form = await request.form()
-        u = form.get("url")
-        return str(u).strip() if u else None
-    except Exception:
-        pass
-    return None
+    if need_url or need_filename:
+        try:
+            form = await request.form()
+            if need_url:
+                u = form.get("url")
+                url = str(u).strip() if u else url
+            if need_filename:
+                fn = form.get("filename")
+                filename = str(fn).strip() if fn else filename
+        except Exception:
+            pass
+    return url, filename
 
 
 async def _clip_download_response(
     request: Request,
     api_key: str | None,
     url: str | None,
+    filename: str | None = None,
 ) -> FileResponse:
-    """Download one clip and return the MP4 as binary (for n8n HTTP Request → file → Drive).
-
-    The file is written only under the OS temp directory and removed after the response is sent
-    (see FileResponse background cleanup). Nothing is stored under videos/raw for this route.
-    """
+    """Download one clip to `videos/raw/{filename}` and return that MP4 for `/extraction` → `/process`."""
     verify_key(api_key)
 
-    reel_url = await _parse_url_from_request(request, url)
+    reel_url, resolved_name = await _parse_clip_download_fields(request, url, filename)
     if not reel_url:
         raise HTTPException(
             status_code=400,
             detail="Missing url: send JSON {\"url\": \"...\"}, form field url, or query ?url=",
         )
 
-    ytdlp_module = load_ytdlp_module()
-    # Do not pre-create an empty .mp4 — that can confuse yt-dlp/merger; use a unique path only.
-    path = Path(tempfile.gettempdir()) / f"socio_clip_{uuid.uuid4().hex}.mp4"
+    if not resolved_name:
+        resolved_name = f"reel_{uuid.uuid4().hex[:12]}.mp4"
 
-    def _cleanup() -> None:
-        try:
-            path.unlink(missing_ok=True)
-        except OSError:
-            pass
+    safe_name = _safe_video_basename(resolved_name)
+    path = Path(RAW_DIR) / safe_name
+
+    ytdlp_module = load_ytdlp_module()
 
     try:
         ok, err = ytdlp_module.download_video(reel_url, path)
     except Exception as exc:
-        _cleanup()
         raise HTTPException(status_code=500, detail=f"Download failed: {exc}") from exc
 
     if not ok or not path.exists():
-        _cleanup()
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
         raise HTTPException(
             status_code=500,
             detail=err or "Download failed or file missing",
@@ -244,8 +377,7 @@ async def _clip_download_response(
     return FileResponse(
         path,
         media_type="video/mp4",
-        filename="reel.mp4",
-        background=BackgroundTask(_cleanup),
+        filename=safe_name,
     )
 
 
@@ -258,13 +390,18 @@ async def clip_download_get(
     request: Request,
     api_key: str | None = Depends(clip_download_api_key),
     url: str | None = Query(None, description="Reel URL — if omitted, returns usage JSON (no auth required)"),
+    filename: str | None = Query(
+        None,
+        description="Saved as videos/raw/{filename}; reuse for /extraction and /process",
+    ),
 ):
     """GET avoids 405 in the browser. With ?url=, same as POST (api-key header if API_KEYS is set)."""
     if not url or not url.strip():
         out = {
             "message": "clip_download expects POST (JSON {\"url\": \"...\"}) or GET with query ?url=",
+            "pipeline": "Then POST /extraction (filename) → POST /process (filename, brand_name, title). Optional ?filename= for stable names.",
             "open_docs": "/docs",
-            "try_get_example": "/clip_download?url=https%3A%2F%2Fwww.instagram.com%2Freel%2FYOUR_ID%2F",
+            "try_get_example": "/clip_download?url=https%3A%2F%2Fwww.instagram.com%2Freel%2FYOUR_ID%2F&filename=myclip.mp4",
         }
         if API_KEYS:
             out["auth"] = (
@@ -274,7 +411,7 @@ async def clip_download_get(
         else:
             out["auth"] = "No API key required (API_KEYS empty)"
         return out
-    return await _clip_download_response(request, api_key, url.strip())
+    return await _clip_download_response(request, api_key, url.strip(), filename)
 
 
 @app.post(
@@ -286,8 +423,12 @@ async def clip_download(
     request: Request,
     api_key: str | None = Depends(clip_download_api_key),
     url: str | None = Query(None, description="Reel or video URL (optional if sent in body)"),
+    filename: str | None = Query(
+        None,
+        description="Saved under videos/raw/; reuse the same value for /extraction and /process",
+    ),
 ):
-    return await _clip_download_response(request, api_key, url)
+    return await _clip_download_response(request, api_key, url, filename)
 
 
 @app.post(
@@ -299,9 +440,10 @@ async def clip_download_at_root(
     request: Request,
     api_key: str | None = Depends(clip_download_api_key),
     url: str | None = Query(None, description="Same as POST /clip_download if the HTTP client URL omits /clip_download"),
+    filename: str | None = Query(None, description="Same as POST /clip_download filename"),
 ):
     """Same behavior as POST /clip_download — n8n sometimes has only the host root in the URL field."""
-    return await _clip_download_response(request, api_key, url)
+    return await _clip_download_response(request, api_key, url, filename)
 
 
 @app.post("/clip_download_sheet")

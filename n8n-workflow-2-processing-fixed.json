@@ -1,0 +1,329 @@
+{
+  "name": "Workflow 2 Processing (fixed chain)",
+  "description": "Download raw from Drive → POST /extraction (multipart) → upload cropped → POST /process (form fields only, no file) → upload final. Fixes: wrong node names (ID3), sequential order, /process without raw binary.",
+  "nodes": [
+    {
+      "parameters": {
+        "pollTimes": { "item": [{ "mode": "everyMinute" }] },
+        "documentId": { "__rl": true, "mode": "list", "value": "1bjUzMcmFiejlVv_N2qFSCBUOYM4JgsG9ZGXMb482-6Y" },
+        "sheetName": { "__rl": true, "mode": "list", "value": "4223526" },
+        "options": {}
+      },
+      "id": "2eed1c71-bc3b-4c61-83a8-c9e9b788494f",
+      "name": "Google Sheets Trigger3",
+      "type": "n8n-nodes-base.googleSheetsTrigger",
+      "typeVersion": 1,
+      "position": [-272, 592]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict", "version": 3 },
+          "conditions": [
+            {
+              "leftValue": "={{ $json.processing_status }}",
+              "rightValue": "In progress",
+              "operator": { "type": "string", "operation": "equals" },
+              "id": "90d8af14-77a9-4e44-9e6e-6cb9c109f64d"
+            },
+            {
+              "leftValue": "={{ $json.processing_status }}",
+              "rightValue": "Processing",
+              "operator": { "type": "string", "operation": "equals" },
+              "id": "60d4f8e1-6094-47d4-b1bf-f5d01979c993"
+            }
+          ],
+          "combinator": "or"
+        },
+        "options": {}
+      },
+      "id": "3ae1b7ac-74fa-4603-b1cd-8c54575b0515",
+      "name": "Filter In Progress Only3",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.3,
+      "position": [-32, 592]
+    },
+    {
+      "parameters": { "options": {} },
+      "id": "c5b1fab6-b983-46da-9376-b17ed3dfbf53",
+      "name": "Process One At A Time3",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [208, 592]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": { "__rl": true, "value": "1bjUzMcmFiejlVv_N2qFSCBUOYM4JgsG9ZGXMb482-6Y", "mode": "list" },
+        "sheetName": { "__rl": true, "value": "4223526", "mode": "list" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ID": "={{ $json.ID }}",
+            "processing_status": "Processing",
+            "row_number": 0
+          },
+          "matchingColumns": ["ID"],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "ecf68176-d8b4-422e-a378-dd36f62d8629",
+      "name": "Mark As Processing3",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [448, 592]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const base = $('Process One At A Time3').item.json;\nconst row = { ...base, ...$input.item.json };\n\nconst url = String(row.raw_gdrive_url || '').trim();\nif (!url) {\n  throw new Error(`raw_gdrive_url missing for ID=${row.ID ?? 'unknown'}`);\n}\n\nlet fileId = null;\nlet m = url.match(/\\/file\\/d\\/([a-zA-Z0-9_-]+)/);\nif (m) fileId = m[1];\n\nif (!fileId) {\n  m = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);\n  if (m) fileId = m[1];\n}\n\nif (!fileId) {\n  throw new Error(`Could not extract Drive file id from URL: ${url}`);\n}\n\nreturn { json: { ...row, file_id: fileId } };"
+      },
+      "id": "9423ced1-6457-41cf-8018-851bffe1633b",
+      "name": "Extract Drive File ID3",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [688, 592]
+    },
+    {
+      "parameters": {
+        "operation": "download",
+        "fileId": { "__rl": true, "mode": "id", "value": "={{ $json.file_id }}" },
+        "options": { "binaryPropertyName": "raw_video" }
+      },
+      "id": "f850465c-caa7-4dcc-b62a-aa59602c2128",
+      "name": "Download Raw Video3",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [928, 592]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://dr5o3ostqc3oreb2emg16fhk.72.60.205.36.sslip.io/extraction",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [{ "name": "api-key", "value": "key789" }]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "raw_video"
+            },
+            {
+              "name": "filename",
+              "value": "={{ String($('Extract Drive File ID3').item.json.ID) }}.mp4"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "cropped_video"
+            }
+          },
+          "timeout": 600000
+        }
+      },
+      "id": "647bf146-9941-4f55-a1e4-be36116a3935",
+      "name": "POST /extraction1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1168, 592],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "inputDataFieldName": "cropped_video",
+        "name": "={{ String($('Extract Drive File ID3').item.json.ID) }}_cropped.mp4",
+        "driveId": { "__rl": true, "value": "My Drive", "mode": "list" },
+        "folderId": { "__rl": true, "mode": "id", "value": "REPLACE_WITH_YOUR_CROPPED_FOLDER_ID" },
+        "options": {}
+      },
+      "id": "9ce7a598-25f0-4c31-89f7-0faafc3ae008",
+      "name": "Upload Cropped Clip",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [1408, 592]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://dr5o3ostqc3oreb2emg16fhk.72.60.205.36.sslip.io/process",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [{ "name": "api-key", "value": "key789" }]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "filename",
+              "value": "={{ String($('Extract Drive File ID3').item.json.ID) }}.mp4"
+            },
+            {
+              "name": "brand_name",
+              "value": "={{ $('Extract Drive File ID3').item.json.brand_name }}"
+            },
+            {
+              "name": "title",
+              "value": "={{ $('Extract Drive File ID3').item.json.Title || '' }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "processed_video"
+            }
+          },
+          "timeout": 600000
+        }
+      },
+      "id": "7a73c398-e755-47f0-858a-962e44f76a5f",
+      "name": "POST /process3",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [1648, 592],
+      "onError": "continueErrorOutput"
+    },
+    {
+      "parameters": {
+        "inputDataFieldName": "processed_video",
+        "name": "={{ String($('Extract Drive File ID3').item.json.ID) }}_final.mp4",
+        "driveId": { "__rl": true, "value": "My Drive", "mode": "list" },
+        "folderId": { "__rl": true, "mode": "id", "value": "1YsoUtnueqe5V2GaYBLaJ7_DeOD2H9lPr" },
+        "options": {}
+      },
+      "id": "ca849905-759b-43d3-bcb9-bb929dffa460",
+      "name": "Upload Final Clip3",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [1888, 416]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": { "__rl": true, "value": "1bjUzMcmFiejlVv_N2qFSCBUOYM4JgsG9ZGXMb482-6Y", "mode": "list" },
+        "sheetName": { "__rl": true, "value": "4223526", "mode": "list" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ID": "={{ $('Extract Drive File ID3').item.json.ID }}",
+            "processing_status": "Done",
+            "final_gdrive_url": "={{ $json.webViewLink }}",
+            "row_number": 0
+          },
+          "matchingColumns": ["ID"],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "153e9c6e-b19d-4a74-b16a-327cc030b2bd",
+      "name": "Sheet Update Done3",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [2128, 416]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": { "__rl": true, "value": "1bjUzMcmFiejlVv_N2qFSCBUOYM4JgsG9ZGXMb482-6Y", "mode": "list" },
+        "sheetName": { "__rl": true, "value": "4223526", "mode": "list" },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "ID": "={{ $('Extract Drive File ID3').item.json.ID }}",
+            "processing_status": "Failed",
+            "error_log": "={{ $json.error?.message || $json.message || 'process endpoint failed' }}"
+          },
+          "matchingColumns": ["ID"],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "b3673669-210e-407c-94f8-e508f2ea8564",
+      "name": "Mark As Failed1",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [1888, 768]
+    },
+    {
+      "parameters": {
+        "content": "Workflow 2 : Processing and finalising (fixed: extraction → cropped upload → process uses server-side cropped file)",
+        "height": 672,
+        "width": 2448
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [-352, 368],
+      "typeVersion": 1,
+      "id": "59309d0a-11b3-459e-9547-aff0df67810d",
+      "name": "Sticky Note1"
+    }
+  ],
+  "connections": {
+    "Google Sheets Trigger3": {
+      "main": [[{ "node": "Filter In Progress Only3", "type": "main", "index": 0 }]]
+    },
+    "Filter In Progress Only3": {
+      "main": [[{ "node": "Process One At A Time3", "type": "main", "index": 0 }]]
+    },
+    "Process One At A Time3": {
+      "main": [
+        [],
+        [{ "node": "Mark As Processing3", "type": "main", "index": 0 }]
+      ]
+    },
+    "Mark As Processing3": {
+      "main": [[{ "node": "Extract Drive File ID3", "type": "main", "index": 0 }]]
+    },
+    "Extract Drive File ID3": {
+      "main": [[{ "node": "Download Raw Video3", "type": "main", "index": 0 }]]
+    },
+    "Download Raw Video3": {
+      "main": [[{ "node": "POST /extraction1", "type": "main", "index": 0 }]]
+    },
+    "POST /extraction1": {
+      "main": [
+        [{ "node": "Upload Cropped Clip", "type": "main", "index": 0 }],
+        [{ "node": "Mark As Failed1", "type": "main", "index": 0 }]
+      ]
+    },
+    "Upload Cropped Clip": {
+      "main": [[{ "node": "POST /process3", "type": "main", "index": 0 }]]
+    },
+    "POST /process3": {
+      "main": [
+        [{ "node": "Upload Final Clip3", "type": "main", "index": 0 }],
+        [{ "node": "Mark As Failed1", "type": "main", "index": 0 }]
+      ]
+    },
+    "Upload Final Clip3": {
+      "main": [[{ "node": "Sheet Update Done3", "type": "main", "index": 0 }]]
+    },
+    "Sheet Update Done3": {
+      "main": [[{ "node": "Process One At A Time3", "type": "main", "index": 0 }]]
+    },
+    "Mark As Failed1": {
+      "main": [[{ "node": "Process One At A Time3", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "meta": { "templateCredsSetupCompleted": true }
+}

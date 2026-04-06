@@ -32,7 +32,13 @@
         "contentType": "json",
         "specifyBody": "keypair",
         "bodyParameters": {
-          "parameters": [{ "name": "url", "value": "={{ $json.reel_url }}" }]
+          "parameters": [
+            { "name": "url", "value": "={{ $json.reel_url }}" },
+            {
+              "name": "filename",
+              "value": "={{ String($('Sheet new reel row').item.json.ID) }}.mp4"
+            }
+          ]
         },
         "options": {
           "response": {
@@ -102,6 +108,43 @@
     },
     {
       "parameters": {
+        "method": "POST",
+        "url": "http://dr5o3ostqc3oreb2emg16fhk.72.60.205.36.sslip.io/extraction",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [{ "name": "api-key", "value": "key789" }]
+        },
+        "sendBody": false,
+        "sendQuery": true,
+        "specifyQuery": "keypair",
+        "queryParameters": {
+          "parameters": [
+            {
+              "name": "filename",
+              "value": "={{ String($('Sheet new reel row').item.json.ID) }}.mp4"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "cropped_mp4",
+              "neverError": true
+            }
+          }
+        }
+      },
+      "name": "HTTP extraction (cropped)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [0, 0],
+      "continueOnFail": true
+    },
+    {
+      "parameters": {
         "resource": "sheet",
         "operation": "appendOrUpdate",
         "documentId": {
@@ -115,7 +158,7 @@
           "value": {
             "ID": "={{ $('Sheet new reel row').item.json.ID }}",
             "processing_status": "In progress",
-            "raw_gdrive_url": "={{ $json.webViewLink }}"
+            "raw_gdrive_url": "={{ $('Drive upload video to raw').item.json.webViewLink }}"
           },
           "matchingColumns": ["ID"],
           "schema": [],
@@ -148,6 +191,11 @@
       ]
     },
     "Drive upload video to raw": {
+      "main": [
+        [{ "node": "HTTP extraction (cropped)", "type": "main", "index": 0 }]
+      ]
+    },
+    "HTTP extraction (cropped)": {
       "main": [
         [{ "node": "Sheet update link and status", "type": "main", "index": 0 }]
       ]
