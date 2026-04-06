@@ -10,13 +10,14 @@ from urllib.parse import parse_qs, urlparse
 from urllib.request import urlopen
 
 import yt_dlp
-from dotenv import load_dotenv
-
-load_dotenv()
 
 SHEET_URL = "https://docs.google.com/spreadsheets/d/1bjUzMcmFiejlVv_N2qFSCBUOYM4JgsG9ZGXMb482-6Y/edit?usp=sharing"
 OUTPUT_DIR = Path("videos/raw")
 LINKS_COLUMN = "Links"
+# Netscape cookies.txt for yt-dlp (Instagram). Docker: /cookies.txt (see Dockerfile). Local: repo root if absent.
+YTDLP_COOKIE_FILE = (
+    Path("/cookies.txt") if Path("/cookies.txt").is_file() else Path(__file__).resolve().parent / "cookies.txt"
+)
 
 def build_csv_export_url(sheet_url: str) -> str:
     parsed = urlparse(sheet_url)
@@ -129,18 +130,18 @@ def _resolve_cookie_path(raw: str) -> Path:
 def download_video(url: str, output_path: Path) -> Tuple[bool, str | None]:
     """
     Download media to output_path (should end with .mp4).
-    Returns (success, error_message). Instagram often needs cookies — set YTDLP_COOKIE_FILE
-    to a Netscape cookies.txt exported while logged in.
+    Returns (success, error_message). Instagram often needs cookies — place Netscape cookies.txt
+    at YTDLP_COOKIE_FILE (project root) or edit that constant in this file.
     """
     base = output_path.with_suffix("")
     _prepare_temp_base(base, output_path)
 
-    cookie_raw = (os.getenv("YTDLP_COOKIE_FILE") or os.getenv("INSTAGRAM_COOKIES_FILE") or "").strip()
+    cookie_raw = str(YTDLP_COOKIE_FILE).strip()
     if cookie_raw and ("full/path" in cookie_raw or "/path/to" in cookie_raw):
         return (
             False,
-            "YTDLP_COOKIE_FILE still looks like a placeholder. Set it in .env to the real absolute path "
-            "to cookies.txt on the machine running this API (local or server), then restart the app.",
+            "YTDLP_COOKIE_FILE still looks like a placeholder. Set YTDLP_COOKIE_FILE in yt-dlp.py to the real "
+            "path to cookies.txt on the machine running this API (local or server), then restart the app.",
         )
 
     cookie_path: Path | None = None
@@ -158,15 +159,15 @@ def download_video(url: str, output_path: Path) -> Tuple[bool, str | None]:
             return (
                 False,
                 f"Cookie file not found at {cookie_raw!r}.{wsl_hint} "
-                "Put cookies.txt there or fix YTDLP_COOKIE_FILE (see cookies/README.txt).",
+                "Put cookies.txt there or fix YTDLP_COOKIE_FILE in yt-dlp.py (see cookies/README.txt).",
             )
 
     is_instagram = "instagram.com" in url.lower()
     if is_instagram and not cookie_raw:
         return (
             False,
-            "Instagram requires a Netscape cookies.txt. Add YTDLP_COOKIE_FILE=/absolute/path/cookies.txt "
-            "to the .env next to api.py (not n8n), use a file exported while logged into instagram.com, restart the API.",
+            "Instagram requires a Netscape cookies.txt. Place cookies.txt at YTDLP_COOKIE_FILE in yt-dlp.py "
+            "(default: project root), use a file exported while logged into instagram.com, restart the API.",
         )
 
     # Instagram reels: single progressive stream is common — "best" is more reliable than merge-only selectors
@@ -209,8 +210,8 @@ def download_video(url: str, output_path: Path) -> Tuple[bool, str | None]:
             "login" in low or "cookie" in low or "private" in low or "rate" in low
         ):
             hint = (
-                " For Instagram, export cookies (e.g. browser extension → cookies.txt) and set "
-                "YTDLP_COOKIE_FILE in .env to that file’s absolute path on this machine."
+                " For Instagram, export cookies (e.g. browser extension → cookies.txt) and ensure "
+                "YTDLP_COOKIE_FILE in yt-dlp.py points to that file on this machine."
             )
         return False, msg + hint
 
@@ -219,7 +220,7 @@ def download_video(url: str, output_path: Path) -> Tuple[bool, str | None]:
     dbg = _list_temp_debug(base)
     hint = (
         f"No .mp4 produced after yt-dlp (temp files: {dbg}). For Instagram: use a fresh cookies.txt, "
-        f"confirm YTDLP_COOKIE_FILE is readable by the API process, and run `pip install -U yt-dlp`. "
+        f"confirm the cookie file at YTDLP_COOKIE_FILE is readable by the API process, and run `pip install -U yt-dlp`. "
     )
     if is_instagram and cookie_raw:
         hint += (
