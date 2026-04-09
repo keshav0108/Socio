@@ -200,8 +200,9 @@ def process_api_help():
         "message": "/process is POST only — not callable in the browser address bar.",
         "how": (
             "POST multipart/form-data or query: `filename`, `brand_name`, `title`. "
-            "Requires `videos/cropped/cropped_{filename}` to exist (run /extraction first). "
-            "Or use POST /process_full with `file` + fields for a one-shot raw→final run."
+            "Optionally include multipart binary field `file` (cropped video). "
+            "If `file` is omitted, requires `videos/cropped/cropped_{filename}` to exist "
+            "(run /extraction first)."
         ),
         "open_docs": "/docs",
     }
@@ -213,6 +214,7 @@ def process_video_api(
     filename: str | None = Form(None),
     brand_name: str | None = Form(None),
     title: str | None = Form(None),
+    file: UploadFile | None = File(None),
     api_key: str | None = Depends(get_api_key),
 ):
     """Cropped (`videos/cropped/cropped_{filename}`) → final MP4 (`videos/final/final_{filename}`)."""
@@ -238,7 +240,10 @@ def process_video_api(
     cropped_path = os.path.join(CROPPED_DIR, f"cropped_{safe_name}")
     final_path = os.path.join(FINAL_DIR, f"final_{safe_name}")
 
-    if not os.path.exists(cropped_path):
+    if file is not None:
+        with open(cropped_path, "wb") as f:
+            shutil.copyfileobj(file.file, f)
+    elif not os.path.exists(cropped_path):
         raise HTTPException(
             status_code=404,
             detail={
