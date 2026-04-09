@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-from typing import Annotated
 import shutil
 import uuid
 import importlib.util
@@ -32,14 +31,6 @@ app = FastAPI(
             "description": (
                 "Three-step pipeline: **clip_download** (url → raw) → **extraction** (raw → cropped) → "
                 "**process** (cropped → final). Use the same `filename` for all three."
-            ),
-        },
-        {
-            "name": "pipeline-local",
-            "description": (
-                "Local full pipeline **POST /process_full_local**: raw → cropped → final. "
-                "Requires existing `videos/raw/{filename}`. Body/query fields only: **api-key**, **filename**, "
-                "**brand_name**, **title** (same `api-key` rules as other routes when `API_KEYS` is set)."
             ),
         },
     ],
@@ -99,11 +90,6 @@ def load_ytdlp_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
-
-
-@app.get("/")
-def home():
-    return {"status": "API Running 🚀"}
 
 
 def _safe_video_basename(filename: str) -> str:
@@ -279,165 +265,6 @@ def process_video_api(
     )
 
 
-@app.post("/process_full", tags=["pipeline"])
-def process_full_api(
-    request: Request,
-    filename: str | None = Form(None),
-    brand_name: str | None = Form(None),
-    title: str | None = Form(None),
-    file: UploadFile | None = File(None),
-    api_key: str | None = Depends(get_api_key),
-):
-    """One-shot: raw → extract → putup (same as the former single `/process`)."""
-    verify_key(api_key)
-
-    if not filename:
-        filename = request.query_params.get("filename")
-    if not brand_name:
-        brand_name = request.query_params.get("brand_name")
-    if not title:
-        title = request.query_params.get("title")
-
-    if not filename:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "filename is required",
-                "hint": "Send multipart/form-data with fields: file, filename, brand_name, title",
-                "content_type": request.headers.get("content-type"),
-                "query_keys": list(request.query_params.keys()),
-            },
-        )
-
-    safe_name = _safe_video_basename(filename)
-    input_path = os.path.join(RAW_DIR, safe_name)
-    cropped_path = os.path.join(CROPPED_DIR, f"cropped_{safe_name}")
-    final_path = os.path.join(FINAL_DIR, f"final_{safe_name}")
-
-    if file is not None:
-        with open(input_path, "wb") as f:
-            shutil.copyfileobj(file.file, f)
-    elif not os.path.exists(input_path):
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "error": "File not found",
-                "input_path": input_path,
-                "hint": "Either upload multipart field `file` or ensure raw file exists on server",
-            },
-        )
-
-    _run_pipeline_step("Extraction", extract_video, input_path, cropped_path)
-    _ensure_output_exists(cropped_path, "Extraction")
-    _run_pipeline_step(
-        "Processing",
-        process_video,
-        cropped_path,
-        final_path,
-        brand_name=brand_name,
-        title=title,
-    )
-    _ensure_output_exists(final_path, "Processing")
-
-    return FileResponse(
-        final_path,
-        media_type="video/mp4",
-        filename=f"final_{safe_name}",
-    )
-
-
-@app.get("/process_full_local", tags=["pipeline-local"])
-def process_full_local_help():
-    """GET returns usage JSON. Raw file must already exist at `videos/raw/{filename}`."""
-    out = {
-        "message": "POST /process_full_local — raw → cropped → final using local disk only.",
-        "fields": ["api-key", "filename", "brand_name", "title"],
-        "how": (
-            "POST `application/x-www-form-urlencoded` or `multipart/form-data` with those four fields, "
-            "or the same four as query parameters. Requires `videos/raw/{filename}` on the server."
-        ),
-        "open_docs": "/docs",
-    }
-    if API_KEYS:
-        out["auth"] = "When API_KEYS is set in .env, include field `api-key` or header api-key / x-api-key / Bearer."
-    else:
-        out["auth"] = "No API key required (API_KEYS empty)."
-    return out
-
-
-@app.post("/process_full_local", tags=["pipeline-local"])
-def process_full_local_api(
-    request: Request,
-    api_key: Annotated[str | None, Form(alias="api-key")] = None,
-    filename: str | None = Form(None),
-    brand_name: str | None = Form(None),
-    title: str | None = Form(None),
-):
-    """One-shot: raw → extract → putup — expects `videos/raw/{filename}`; no file upload."""
-    resolved_key = (
-        api_key
-        or request.query_params.get("api-key")
-        or get_api_key(request)
-    )
-    verify_key(resolved_key)
-
-    if not filename:
-        filename = request.query_params.get("filename")
-    if not brand_name:
-        brand_name = request.query_params.get("brand_name")
-    if not title:
-        title = request.query_params.get("title")
-
-    missing = [n for n, v in (
-        ("filename", filename),
-        ("brand_name", brand_name),
-        ("title", title),
-    ) if not (v and str(v).strip())]
-    if missing:
-        raise HTTPException(
-            status_code=422,
-            detail={
-                "error": "Missing required fields",
-                "missing": missing,
-                "required": ["api-key", "filename", "brand_name", "title"],
-                "hint": "Send all four as form fields or query params (api-key may use headers instead).",
-            },
-        )
-
-    safe_name = _safe_video_basename(filename)
-    input_path = os.path.join(RAW_DIR, safe_name)
-    cropped_path = os.path.join(CROPPED_DIR, f"cropped_{safe_name}")
-    final_path = os.path.join(FINAL_DIR, f"final_{safe_name}")
-
-    if not os.path.exists(input_path):
-        raise HTTPException(
-            status_code=404,
-            detail={
-                "error": "Raw file not found",
-                "input_path": input_path,
-                "hint": "Place the video at this path or use clip_download / upload elsewhere first.",
-            },
-        )
-
-    _run_pipeline_step("Extraction", extract_video, input_path, cropped_path)
-    _ensure_output_exists(cropped_path, "Extraction")
-    _run_pipeline_step(
-        "Processing",
-        process_video,
-        cropped_path,
-        final_path,
-        brand_name=brand_name.strip(),
-        title=title.strip(),
-    )
-    _ensure_output_exists(final_path, "Processing")
-
-    return FileResponse(
-        final_path,
-        media_type="video/mp4",
-        filename=f"final_{safe_name}",
-    )
-
-
 async def _parse_clip_download_fields(
     request: Request,
     url_query: str | None,
@@ -601,42 +428,3 @@ async def clip_download(
 ):
     return await _clip_download_response(request, api_key, url, filename)
 
-
-@app.post(
-    "/",
-    tags=["clip-download"],
-    responses={401: {"description": "Invalid or missing API key (when API_KEYS is set)"}},
-)
-async def clip_download_at_root(
-    request: Request,
-    api_key: str | None = Depends(clip_download_api_key),
-    url: str | None = Query(None, description="Same as POST /clip_download if the HTTP client URL omits /clip_download"),
-    filename: str | None = Query(None, description="Same as POST /clip_download filename"),
-):
-    """Same behavior as POST /clip_download — n8n sometimes has only the host root in the URL field."""
-    return await _clip_download_response(request, api_key, url, filename)
-
-
-@app.post("/clip_download_sheet")
-def clip_download_sheet(
-    sheet_url: str = "https://docs.google.com/spreadsheets/d/1bjUzMcmFiejlVv_N2qFSCBUOYM4JgsG9ZGXMb482-6Y/edit?usp=sharing",
-    api_key: str | None = Depends(get_api_key),
-):
-    verify_key(api_key)
-
-    try:
-        ytdlp_module = load_ytdlp_module()
-        result = ytdlp_module.download_from_sheet(
-            sheet_url=sheet_url,
-            column_name=ytdlp_module.LINKS_COLUMN,
-            output_dir=Path(RAW_DIR),
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Clip download failed: {exc}") from exc
-
-    return {
-        "message": "Clip download completed",
-        "sheet_url": sheet_url,
-        "output_dir": RAW_DIR,
-        **result,
-    }
