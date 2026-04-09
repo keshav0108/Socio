@@ -334,7 +334,8 @@ def process(input_path, output_path, config, title):
     y_handle = y_logo + y_handle_offset
     y_title = y_logo + container1_h + gap_container1_to_title
     y_video = y_title + title_h + gap_title_to_video
-    text_x = left + logo_width + 16
+    logo_to_brand_gap = int(config.get("spacing", {}).get("between_logo_and_brand", 16))
+    text_x = left + logo_width + logo_to_brand_gap
 
     # VIDEO FILTERS
     filters = [
