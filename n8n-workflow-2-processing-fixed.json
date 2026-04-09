@@ -1,6 +1,6 @@
 {
   "name": "Workflow 2 Processing (fixed chain)",
-  "description": "Download raw from Drive → POST /extraction (multipart) → upload cropped → POST /process (form fields only, no file) → upload final. Fixes: wrong node names (ID3), sequential order, /process without raw binary.",
+  "description": "No $('NodeName') for row data — uses Set 'Carry pipeline fields' + $json.pipeline_* to avoid 'Referenced node doesn't exist' when names differ on Cloud.",
   "nodes": [
     {
       "parameters": {
@@ -79,7 +79,7 @@
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "const base = $('Process One At A Time3').item.json;\nconst row = { ...base, ...$input.item.json };\n\nconst url = String(row.raw_gdrive_url || '').trim();\nif (!url) {\n  throw new Error(`raw_gdrive_url missing for ID=${row.ID ?? 'unknown'}`);\n}\n\nlet fileId = null;\nlet m = url.match(/\\/file\\/d\\/([a-zA-Z0-9_-]+)/);\nif (m) fileId = m[1];\n\nif (!fileId) {\n  m = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);\n  if (m) fileId = m[1];\n}\n\nif (!fileId) {\n  throw new Error(`Could not extract Drive file id from URL: ${url}`);\n}\n\nreturn { json: { ...row, file_id: fileId } };"
+        "jsCode": "const row = $input.item.json;\n\nconst url = String(row.raw_gdrive_url || '').trim();\nif (!url) {\n  throw new Error(`raw_gdrive_url missing for ID=${row.ID ?? 'unknown'}`);\n}\n\nlet fileId = null;\nlet m = url.match(/\\/file\\/d\\/([a-zA-Z0-9_-]+)/);\nif (m) fileId = m[1];\n\nif (!fileId) {\n  m = url.match(/[?&]id=([a-zA-Z0-9_-]+)/);\n  if (m) fileId = m[1];\n}\n\nif (!fileId) {\n  throw new Error(`Could not extract Drive file id from URL: ${url}`);\n}\n\nreturn { json: { ...row, file_id: fileId } };"
       },
       "id": "9423ced1-6457-41cf-8018-851bffe1633b",
       "name": "Extract Drive File ID3",
@@ -98,6 +98,17 @@
       "type": "n8n-nodes-base.googleDrive",
       "typeVersion": 3,
       "position": [928, 592]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const j = $input.item.json;\nconst bin = $input.item.binary;\nreturn {\n  json: {\n    ...j,\n    pipeline_id: j.ID,\n    pipeline_brand: j.brand_name,\n    pipeline_title: j.Title ?? '',\n  },\n  binary: bin,\n};"
+      },
+      "id": "f1a2b3c4-d5e6-7890-abcd-ef1234567891",
+      "name": "Carry pipeline fields",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1048, 592]
     },
     {
       "parameters": {
@@ -120,7 +131,7 @@
             },
             {
               "name": "filename",
-              "value": "={{ String($('Extract Drive File ID3').item.json.ID) }}.mp4"
+              "value": "={{ String($json.pipeline_id) }}.mp4"
             }
           ]
         },
@@ -143,8 +154,21 @@
     },
     {
       "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const j = $input.item.json || {};\nconst bin = $input.item.binary || {};\nconst keys = Object.keys(bin);\nif (!keys.length) {\n  throw new Error('No binary from extraction HTTP node. Check API returns MP4 and Response Format = File.');\n}\n// HTTP Request often stores the file as \"data\" even if outputPropertyName is set; accept any key and copy to cropped_video\nconst b = bin.cropped_video || bin.data || bin.file || bin[keys[0]];\nif (!b) {\n  throw new Error('Could not read binary object from: ' + keys.join(', '));\n}\nreturn {\n  json: j,\n  binary: { cropped_video: b },\n};"
+      },
+      "id": "a8b9c0d1-e2f3-4567-8901-bcdef0123456",
+      "name": "Normalize cropped binary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1288, 592]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "upload",
         "inputDataFieldName": "cropped_video",
-        "name": "={{ String($('Extract Drive File ID3').item.json.ID) }}_cropped.mp4",
+        "name": "={{ String($json.pipeline_id) }}_cropped.mp4",
         "driveId": { "__rl": true, "value": "My Drive", "mode": "list" },
         "folderId": { "__rl": true, "mode": "id", "value": "REPLACE_WITH_YOUR_CROPPED_FOLDER_ID" },
         "options": {}
@@ -153,7 +177,7 @@
       "name": "Upload Cropped Clip",
       "type": "n8n-nodes-base.googleDrive",
       "typeVersion": 3,
-      "position": [1408, 592]
+      "position": [1528, 592]
     },
     {
       "parameters": {
@@ -171,15 +195,15 @@
           "parameters": [
             {
               "name": "filename",
-              "value": "={{ String($('Extract Drive File ID3').item.json.ID) }}.mp4"
+              "value": "={{ String($json.pipeline_id) }}.mp4"
             },
             {
               "name": "brand_name",
-              "value": "={{ $('Extract Drive File ID3').item.json.brand_name }}"
+              "value": "={{ $json.pipeline_brand }}"
             },
             {
               "name": "title",
-              "value": "={{ $('Extract Drive File ID3').item.json.Title || '' }}"
+              "value": "={{ $json.pipeline_title || '' }}"
             }
           ]
         },
@@ -202,8 +226,21 @@
     },
     {
       "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const j = $input.item.json || {};\nconst bin = $input.item.binary || {};\nconst keys = Object.keys(bin);\nif (!keys.length) {\n  throw new Error('No binary from /process HTTP node.');\n}\nconst b = bin.processed_video || bin.data || bin.file || bin[keys[0]];\nreturn {\n  json: j,\n  binary: { processed_video: b },\n};"
+      },
+      "id": "b1c2d3e4-f5a6-7890-bcde-f12345678901",
+      "name": "Normalize final binary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1768, 416]
+    },
+    {
+      "parameters": {
+        "resource": "file",
+        "operation": "upload",
         "inputDataFieldName": "processed_video",
-        "name": "={{ String($('Extract Drive File ID3').item.json.ID) }}_final.mp4",
+        "name": "={{ String($json.pipeline_id) }}_final.mp4",
         "driveId": { "__rl": true, "value": "My Drive", "mode": "list" },
         "folderId": { "__rl": true, "mode": "id", "value": "1YsoUtnueqe5V2GaYBLaJ7_DeOD2H9lPr" },
         "options": {}
@@ -212,7 +249,7 @@
       "name": "Upload Final Clip3",
       "type": "n8n-nodes-base.googleDrive",
       "typeVersion": 3,
-      "position": [1888, 416]
+      "position": [2008, 416]
     },
     {
       "parameters": {
@@ -222,7 +259,7 @@
         "columns": {
           "mappingMode": "defineBelow",
           "value": {
-            "ID": "={{ $('Extract Drive File ID3').item.json.ID }}",
+            "ID": "={{ $('Carry pipeline fields').item.json.pipeline_id }}",
             "processing_status": "Done",
             "final_gdrive_url": "={{ $json.webViewLink }}",
             "row_number": 0
@@ -248,9 +285,9 @@
         "columns": {
           "mappingMode": "defineBelow",
           "value": {
-            "ID": "={{ $('Extract Drive File ID3').item.json.ID }}",
+            "ID": "={{ $('Carry pipeline fields').item.json.pipeline_id }}",
             "processing_status": "Failed",
-            "error_log": "={{ $json.error?.message || $json.message || 'process endpoint failed' }}"
+            "error_log": "={{ $json.error?.message || $json.message || $json.description || $json.detail || JSON.stringify($json) }}"
           },
           "matchingColumns": ["ID"],
           "attemptToConvertTypes": false,
@@ -266,7 +303,7 @@
     },
     {
       "parameters": {
-        "content": "Workflow 2 : Processing and finalising (fixed: extraction → cropped upload → process uses server-side cropped file)",
+        "content": "Carry pipeline fields copies ID/brand/title to pipeline_* so HTTP nodes use $json only (no broken $('…') refs).",
         "height": 672,
         "width": 2448
       },
@@ -297,22 +334,31 @@
       "main": [[{ "node": "Download Raw Video3", "type": "main", "index": 0 }]]
     },
     "Download Raw Video3": {
+      "main": [[{ "node": "Carry pipeline fields", "type": "main", "index": 0 }]]
+    },
+    "Carry pipeline fields": {
       "main": [[{ "node": "POST /extraction1", "type": "main", "index": 0 }]]
     },
     "POST /extraction1": {
       "main": [
-        [{ "node": "Upload Cropped Clip", "type": "main", "index": 0 }],
+        [{ "node": "Normalize cropped binary", "type": "main", "index": 0 }],
         [{ "node": "Mark As Failed1", "type": "main", "index": 0 }]
       ]
+    },
+    "Normalize cropped binary": {
+      "main": [[{ "node": "Upload Cropped Clip", "type": "main", "index": 0 }]]
     },
     "Upload Cropped Clip": {
       "main": [[{ "node": "POST /process3", "type": "main", "index": 0 }]]
     },
     "POST /process3": {
       "main": [
-        [{ "node": "Upload Final Clip3", "type": "main", "index": 0 }],
+        [{ "node": "Normalize final binary", "type": "main", "index": 0 }],
         [{ "node": "Mark As Failed1", "type": "main", "index": 0 }]
       ]
+    },
+    "Normalize final binary": {
+      "main": [[{ "node": "Upload Final Clip3", "type": "main", "index": 0 }]]
     },
     "Upload Final Clip3": {
       "main": [[{ "node": "Sheet Update Done3", "type": "main", "index": 0 }]]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from typing import Annotated
 import shutil
 import uuid
 import importlib.util
@@ -31,6 +32,14 @@ app = FastAPI(
             "description": (
                 "Three-step pipeline: **clip_download** (url → raw) → **extraction** (raw → cropped) → "
                 "**process** (cropped → final). Use the same `filename` for all three."
+            ),
+        },
+        {
+            "name": "pipeline-local",
+            "description": (
+                "Local full pipeline **POST /process_full_local**: raw → cropped → final. "
+                "Requires existing `videos/raw/{filename}`. Body/query fields only: **api-key**, **filename**, "
+                "**brand_name**, **title** (same `api-key` rules as other routes when `API_KEYS` is set)."
             ),
         },
     ],
@@ -286,6 +295,89 @@ def process_full_api(
 
     extract_video(input_path, cropped_path)
     process_video(cropped_path, final_path, brand_name=brand_name, title=title)
+
+    return FileResponse(
+        final_path,
+        media_type="video/mp4",
+        filename=f"final_{safe_name}",
+    )
+
+
+@app.get("/process_full_local", tags=["pipeline-local"])
+def process_full_local_help():
+    """GET returns usage JSON. Raw file must already exist at `videos/raw/{filename}`."""
+    out = {
+        "message": "POST /process_full_local — raw → cropped → final using local disk only.",
+        "fields": ["api-key", "filename", "brand_name", "title"],
+        "how": (
+            "POST `application/x-www-form-urlencoded` or `multipart/form-data` with those four fields, "
+            "or the same four as query parameters. Requires `videos/raw/{filename}` on the server."
+        ),
+        "open_docs": "/docs",
+    }
+    if API_KEYS:
+        out["auth"] = "When API_KEYS is set in .env, include field `api-key` or header api-key / x-api-key / Bearer."
+    else:
+        out["auth"] = "No API key required (API_KEYS empty)."
+    return out
+
+
+@app.post("/process_full_local", tags=["pipeline-local"])
+def process_full_local_api(
+    request: Request,
+    api_key: Annotated[str | None, Form(alias="api-key")] = None,
+    filename: str | None = Form(None),
+    brand_name: str | None = Form(None),
+    title: str | None = Form(None),
+):
+    """One-shot: raw → extract → putup — expects `videos/raw/{filename}`; no file upload."""
+    resolved_key = (
+        api_key
+        or request.query_params.get("api-key")
+        or get_api_key(request)
+    )
+    verify_key(resolved_key)
+
+    if not filename:
+        filename = request.query_params.get("filename")
+    if not brand_name:
+        brand_name = request.query_params.get("brand_name")
+    if not title:
+        title = request.query_params.get("title")
+
+    missing = [n for n, v in (
+        ("filename", filename),
+        ("brand_name", brand_name),
+        ("title", title),
+    ) if not (v and str(v).strip())]
+    if missing:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": "Missing required fields",
+                "missing": missing,
+                "required": ["api-key", "filename", "brand_name", "title"],
+                "hint": "Send all four as form fields or query params (api-key may use headers instead).",
+            },
+        )
+
+    safe_name = _safe_video_basename(filename)
+    input_path = os.path.join(RAW_DIR, safe_name)
+    cropped_path = os.path.join(CROPPED_DIR, f"cropped_{safe_name}")
+    final_path = os.path.join(FINAL_DIR, f"final_{safe_name}")
+
+    if not os.path.exists(input_path):
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": "Raw file not found",
+                "input_path": input_path,
+                "hint": "Place the video at this path or use clip_download / upload elsewhere first.",
+            },
+        )
+
+    extract_video(input_path, cropped_path)
+    process_video(cropped_path, final_path, brand_name=brand_name.strip(), title=title.strip())
 
     return FileResponse(
         final_path,
