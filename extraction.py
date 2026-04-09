@@ -77,14 +77,17 @@ def get_crop_filter(video_path):
 def apply_crop(input_file, output_file, crop):
     cmd = [
         "ffmpeg",
+        "-v", "error",
         "-i", str(input_file),
         "-vf", crop,
         "-c:a", "copy",
         "-y",
         str(output_file),
     ]
-
-    subprocess.run(cmd)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        stderr = (result.stderr or "").strip() or "Unknown ffmpeg error"
+        raise RuntimeError(f"ffmpeg crop failed: {stderr}")
 
 # API Callable Function
 def extract_video(input_file, output_file):
@@ -101,6 +104,8 @@ def extract_video(input_file, output_file):
         crop = "crop=iw:ih*0.75:0:ih*0.25"
 
     apply_crop(input_path, output_path, crop)
+    if not output_path.exists() or output_path.stat().st_size == 0:
+        raise RuntimeError(f"Cropped output missing or empty: {output_path}")
 
 
 # Main
