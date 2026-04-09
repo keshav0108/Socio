@@ -115,6 +115,37 @@ def _safe_video_basename(filename: str) -> str:
     return safe_name
 
 
+def _ensure_output_exists(path: str, stage: str) -> None:
+    if not os.path.exists(path):
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": f"{stage} did not produce output",
+                "expected_path": path,
+                "hint": "Check ffmpeg/opencv logs on the API server.",
+            },
+        )
+
+
+def _run_pipeline_step(step_name: str, fn, *args, **kwargs):
+    try:
+        return fn(*args, **kwargs)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ValueError, SystemExit) as exc:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{step_name} failed: {str(exc) or type(exc).__name__}",
+        ) from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail=f"{step_name} failed: {exc}",
+        ) from exc
+
+
 @app.get("/extraction", tags=["pipeline"])
 def extraction_api_help():
     """GET returns usage JSON. Extraction itself is POST-only (browser GET would otherwise be 405)."""
@@ -166,10 +197,8 @@ def extraction_api(
             },
         )
 
-    try:
-        extract_video(input_path, cropped_path)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _run_pipeline_step("Extraction", extract_video, input_path, cropped_path)
+    _ensure_output_exists(cropped_path, "Extraction")
 
     return FileResponse(
         cropped_path,
@@ -233,10 +262,15 @@ def process_video_api(
             },
         )
 
-    try:
-        process_video(cropped_path, final_path, brand_name=brand_name, title=title)
-    except FileNotFoundError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    _run_pipeline_step(
+        "Processing",
+        process_video,
+        cropped_path,
+        final_path,
+        brand_name=brand_name,
+        title=title,
+    )
+    _ensure_output_exists(final_path, "Processing")
 
     return FileResponse(
         final_path,
@@ -293,8 +327,17 @@ def process_full_api(
             },
         )
 
-    extract_video(input_path, cropped_path)
-    process_video(cropped_path, final_path, brand_name=brand_name, title=title)
+    _run_pipeline_step("Extraction", extract_video, input_path, cropped_path)
+    _ensure_output_exists(cropped_path, "Extraction")
+    _run_pipeline_step(
+        "Processing",
+        process_video,
+        cropped_path,
+        final_path,
+        brand_name=brand_name,
+        title=title,
+    )
+    _ensure_output_exists(final_path, "Processing")
 
     return FileResponse(
         final_path,
@@ -376,8 +419,17 @@ def process_full_local_api(
             },
         )
 
-    extract_video(input_path, cropped_path)
-    process_video(cropped_path, final_path, brand_name=brand_name.strip(), title=title.strip())
+    _run_pipeline_step("Extraction", extract_video, input_path, cropped_path)
+    _ensure_output_exists(cropped_path, "Extraction")
+    _run_pipeline_step(
+        "Processing",
+        process_video,
+        cropped_path,
+        final_path,
+        brand_name=brand_name.strip(),
+        title=title.strip(),
+    )
+    _ensure_output_exists(final_path, "Processing")
 
     return FileResponse(
         final_path,
