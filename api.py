@@ -4,6 +4,7 @@ import os
 import shutil
 import uuid
 import importlib.util
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Security, UploadFile
@@ -13,7 +14,32 @@ from extraction import extract_video
 from putup import process_video
 from config import API_KEYS, is_valid_api_key
 
+
+@asynccontextmanager
+async def _app_lifespan(app: FastAPI):
+    """Optional background Google Sheet poll (same as `python sheet_cron.py`)."""
+    sched = None
+    if os.getenv("ENABLE_SHEET_CRON", "0").strip().lower() in ("1", "true", "yes", "on"):
+        from apscheduler.schedulers.background import BackgroundScheduler
+
+        from sheet_cron import job_read_sheet, _scheduler_trigger_from_env
+
+        sched = BackgroundScheduler()
+        sched.add_job(
+            job_read_sheet,
+            trigger=_scheduler_trigger_from_env(),
+            id="read_google_sheet",
+            replace_existing=True,
+        )
+        sched.start()
+    app.state.sheet_cron_scheduler = sched
+    yield
+    if sched is not None:
+        sched.shutdown(wait=False)
+
+
 app = FastAPI(
+    lifespan=_app_lifespan,
     openapi_tags=[
         {
             "name": "clip-download",
@@ -31,6 +57,14 @@ app = FastAPI(
             "description": (
                 "Three-step pipeline: **clip_download** (url → raw) → **extraction** (raw → cropped) → "
                 "**process** (cropped → final). Use the same `filename` for all three."
+            ),
+        },
+        {
+            "name": "sheet-cron",
+            "description": (
+                "Google Sheet publish scheduler (`sheet_cron.py`). Set **ENABLE_SHEET_CRON=1** and mount "
+                "the same env vars as the CLI (credentials, `CHECK_INTERVAL_MINUTES`, webhook URL). "
+                "`POST /sheet_cron/run` triggers one check (same as `--once`)."
             ),
         },
     ],
@@ -415,6 +449,51 @@ async def clip_download_get(
             out["auth"] = "No API key required (API_KEYS empty)"
         return out
     return await _clip_download_response(request, api_key, url.strip(), filename)
+
+
+@app.get("/health", tags=["sheet-cron"])
+def health():
+    """Simple health check for Coolify / reverse proxies."""
+    return {"status": "ok"}
+
+
+@app.get("/sheet_cron/status", tags=["sheet-cron"])
+def sheet_cron_status():
+    """Whether the background poller is enabled and the next scheduled run (if any)."""
+    sched = getattr(app.state, "sheet_cron_scheduler", None)
+    if not sched:
+        return {
+            "enabled": False,
+            "hint": "Set ENABLE_SHEET_CRON=1 and redeploy to poll the sheet on CHECK_INTERVAL_MINUTES.",
+        }
+    job = sched.get_job("read_google_sheet")
+    nxt = job.next_run_time if job else None
+    return {
+        "enabled": True,
+        "next_run_time": nxt.isoformat() if nxt else None,
+    }
+
+
+@app.post("/sheet_cron/run", tags=["sheet-cron"])
+def sheet_cron_run(
+    request: Request,
+    api_key: str | None = Depends(get_api_key),
+):
+    """
+    Run one sheet read + match + webhook pass (same logic as `python sheet_cron.py --once`).
+    Use from Coolify cron or n8n HTTP Request if you prefer not to use the in-process scheduler.
+    """
+    verify_key(api_key)
+
+    from sheet_cron import run_sheet_cron_once
+
+    try:
+        n = run_sheet_cron_once()
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    return {"ok": True, "webhooks_fired": n}
 
 
 @app.post(

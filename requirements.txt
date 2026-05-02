@@ -6,3 +6,6 @@ numpy
 rich
 yt-dlp
 python-multipart
+apscheduler
+gspread
+google-auth

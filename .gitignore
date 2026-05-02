@@ -3,3 +3,5 @@ venv/
 __pycache__/
 *.pyc
 .env
+# Google Cloud service account keys — use GOOGLE_SERVICE_ACCOUNT_JSON in .env
+psyched-equator-*.json
