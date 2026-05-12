@@ -181,10 +181,17 @@ def ensure_poppins_fonts() -> None:
 
 
 def esc(text):
+    # Escape characters that are special inside ffmpeg `drawtext` filter values.
+    # NOTE on apostrophes: ffmpeg wraps `text=` in single quotes, and a literal
+    # apostrophe cannot appear inside a single-quoted value — `\'` does NOT
+    # escape it (the backslash is literal). The portable trick is to close the
+    # quoted string, emit `\'` (literal apostrophe in unquoted context), then
+    # reopen: replace `'` with `'\''`. Without this, titles like "I've" make
+    # ffmpeg fail with "Error parsing filterchain ... Invalid argument".
     return (
         text.replace("\\", "\\\\")
         .replace(":", "\\:")
-        .replace("'", "\\'")
+        .replace("'", "'\\''")
         .replace(",", "\\,")
         .replace("\n", "\\n")
     )
