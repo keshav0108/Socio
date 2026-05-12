@@ -142,11 +142,22 @@ def make_circular_logo(
 
 
 def run(cmd):
+    # Stream ffmpeg output to server logs AND keep a rolling tail so the API
+    # can surface the real error to clients instead of a generic "ffmpeg failed".
     p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    tail: list[str] = []
+    max_tail = 40
     for line in p.stdout:
-        print(line.rstrip())
+        line = line.rstrip()
+        print(line)
+        tail.append(line)
+        if len(tail) > max_tail:
+            del tail[: len(tail) - max_tail]
     if p.wait() != 0:
-        sys.exit("ffmpeg failed")
+        # Raise ValueError (mapped to HTTP 400 by api._run_pipeline_step) with
+        # the last few ffmpeg log lines so the caller sees the actual cause.
+        details = "\n".join(tail).strip() or "no ffmpeg output captured"
+        raise ValueError(f"ffmpeg failed:\n{details}")
 
 
 def ensure_poppins_fonts() -> None:
