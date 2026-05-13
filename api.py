@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import functools
 import os
 import shutil
 import tempfile
@@ -452,6 +454,12 @@ def extract_title_api_help():
             "set column **Title** = `{{ $json.title }}` (from the extract_title response), keep matching "
             "on **name** (or **ID**) together with **Sheet update link and status** in one node or two."
         ),
+        "server_tuning": (
+            "OCR is CPU-heavy. On the host, set **TITLE_EXTRACT_MAX_SECONDS** (default 300) to cap wall time, "
+            "**TITLE_EXTRACT_MAX_OCR_EDGE** (default 1400 px) to downscale before Tesseract, "
+            "**TITLE_EXTRACT_LITE=1** for fewer preprocess variants, and keep the n8n HTTP node **timeout** "
+            "≥ that cap (e.g. 300000 ms) so the client does not abort first."
+        ),
         "open_docs": "/docs",
     }
 
@@ -528,7 +536,8 @@ async def extract_title_api(
             )
 
         try:
-            title = extract_title_for_pipeline(input_path, min_word_conf=ocr_min)
+            run = functools.partial(extract_title_for_pipeline, input_path, min_word_conf=ocr_min)
+            title = await asyncio.to_thread(run)
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=str(e)) from e
         except FileNotFoundError as e:

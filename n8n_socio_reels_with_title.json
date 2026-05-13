@@ -202,10 +202,15 @@
             }
           ]
         },
-        "options": {}
-      },
-      "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
-      "name": "HTTP Extract title",
+        "options": {
+          "timeout": 300000,
+          "response": {
+            "response": {
+              "responseFormat": "json",
+              "fullResponse": false
+            }
+          }
+        }
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
       "position": [-1808, -1392]

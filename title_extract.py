@@ -45,6 +45,16 @@ Environment (same spirit as sheet_cron.py)
 
   TITLE_OCR_MIN_WORD_CONF — Tesseract word confidence 0–100 (default 60). Higher drops
   more hallucinated words; lower keeps faint text.
+
+  TITLE_EXTRACT_MAX_SECONDS — Wall-clock cap for one extraction (default 300). Set 0 or
+  none to disable (can run a very long time on large frames). Partial best title is
+  returned when the budget is hit.
+
+  TITLE_EXTRACT_MAX_OCR_EDGE — Longer edge of each OCR image is downscaled to at most
+  this many pixels before Tesseract (default 1400). Lower is faster; too low hurts accuracy.
+
+  TITLE_EXTRACT_LITE=1 — Fewer colour planes and preprocess variants (faster, slightly
+  less robust on coloured hooks).
 """
 
 from __future__ import annotations
@@ -57,6 +67,7 @@ import logging
 import os
 import re
 import sys
+import time
 import unicodedata
 from datetime import datetime, timezone
 from typing import Any
@@ -285,6 +296,27 @@ def _scale_u8(img: np.ndarray, scale: float) -> np.ndarray:
     return cv2.resize(img, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
 
 
+def _max_ocr_edge_px() -> int:
+    """Downscale OCR input if longer edge exceeds this (Tesseract cost grows fast with pixels)."""
+    try:
+        v = int((os.getenv("TITLE_EXTRACT_MAX_OCR_EDGE") or "1400").strip())
+    except ValueError:
+        v = 1400
+    return max(480, min(v, 8000))
+
+
+def _cap_gray_max_edge(gray: np.ndarray) -> np.ndarray:
+    cap = _max_ocr_edge_px()
+    h, w = gray.shape[:2]
+    m = max(h, w)
+    if m <= cap:
+        return gray
+    s = cap / float(m)
+    nw = max(1, int(w * s))
+    nh = max(1, int(h * s))
+    return cv2.resize(gray, (nw, nh), interpolation=cv2.INTER_AREA)
+
+
 def _sources_from_bgr(bgr: np.ndarray) -> list[tuple[str, np.ndarray]]:
     """
     Single grayscale crushes coloured headlines (e.g. orange on black) to mid-gray.
@@ -304,6 +336,13 @@ def _sources_from_bgr(bgr: np.ndarray) -> list[tuple[str, np.ndarray]]:
     ]
 
 
+def _sources_from_bgr_lite(bgr: np.ndarray) -> list[tuple[str, np.ndarray]]:
+    """Fewer colour planes for TITLE_EXTRACT_LITE (faster server / n8n runs)."""
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+    mx = np.max(bgr, axis=2).astype(np.uint8)
+    return [("std_gray", gray), ("max_rgb", mx)]
+
+
 def _invert_if_dark(gray: np.ndarray, thresh: float = 115.0) -> np.ndarray:
     if np.mean(gray) < thresh:
         return cv2.bitwise_not(gray)
@@ -314,9 +353,13 @@ def _iter_preprocess_variants(bgr: np.ndarray, scale: float) -> list[tuple[str, 
     """
     Run OCR on several derived images: white and coloured light text on black need
     different paths; Otsu on plain grayscale often drops non-white ink.
+
+    Set TITLE_EXTRACT_LITE=1 for fewer variants (recommended on small servers / n8n).
     """
     out: list[tuple[str, np.ndarray]] = []
-    for src_name, plane in _sources_from_bgr(bgr):
+    lite = (os.getenv("TITLE_EXTRACT_LITE") or "").strip().lower() in ("1", "true", "yes", "on")
+    sources = _sources_from_bgr_lite(bgr) if lite else _sources_from_bgr(bgr)
+    for src_name, plane in sources:
         g0 = _scale_u8(plane, scale)
         # 1) Invert dark canvas → light background; raw grayscale for Tesseract
         g1 = _invert_if_dark(g0.copy())
@@ -324,6 +367,8 @@ def _iter_preprocess_variants(bgr: np.ndarray, scale: float) -> list[tuple[str, 
         # 2) Otsu binarize after invert (good for high-contrast white text)
         _, otsu = cv2.threshold(g1, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         out.append((f"{src_name}+inv_otsu", otsu))
+        if lite:
+            continue
         # 3) CLAHE then invert + Otsu (helps uneven / coloured strokes)
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         g2 = clahe.apply(g0)
@@ -354,6 +399,7 @@ def _tesseract_psm_config(lang: str) -> str:
 
 
 def _ocr_text(gray: np.ndarray, lang: str) -> str:
+    gray = _cap_gray_max_edge(gray)
     return pytesseract.image_to_string(gray, config=_tesseract_psm_config(lang))
 
 
@@ -362,6 +408,7 @@ def _ocr_confident_words(gray: np.ndarray, lang: str, min_conf: int) -> str:
     Join only word-level boxes with confidence >= min_conf. Cuts most hallucinated
     tails (random caps/digits) that image_to_string still pastes in.
     """
+    gray = _cap_gray_max_edge(gray)
     data = pytesseract.image_to_data(
         gray,
         config=_tesseract_psm_config(lang),
@@ -675,6 +722,23 @@ def _quality_score(text: str) -> float:
     return base
 
 
+def _title_extract_deadline_monotonic() -> float | None:
+    """
+    Wall-clock budget for one title extraction (many Tesseract passes).
+    Set TITLE_EXTRACT_MAX_SECONDS=0 or none to disable (not recommended on small servers).
+    """
+    raw = (os.getenv("TITLE_EXTRACT_MAX_SECONDS") or "300").strip().lower()
+    if raw in ("0", "none", "off", "false", "unlimited"):
+        return None
+    try:
+        sec = float(raw)
+    except ValueError:
+        return time.monotonic() + 300.0
+    if sec <= 0:
+        return None
+    return time.monotonic() + sec
+
+
 def extract_title_from_video(
     video_path: str,
     *,
@@ -687,6 +751,7 @@ def extract_title_from_video(
     lang: str,
     alt_roi: bool = True,
     min_word_conf: int = 60,
+    deadline: float | None = None,
 ) -> str:
     path = os.path.abspath(video_path)
     if not os.path.isfile(path):
@@ -698,11 +763,20 @@ def extract_title_from_video(
 
     best_text = ""
     best_score = -1.0
+    timed_out = False
 
     def _try_roi(tag: str, fr: np.ndarray, y0: float, y1: float, x0: float, x1: float) -> None:
-        nonlocal best_text, best_score
+        nonlocal best_text, best_score, timed_out
         chunk = _roi_slice(fr, y0, y1, x0, x1)
         for vtag, prep in _iter_preprocess_variants(chunk, scale):
+            if deadline is not None and time.monotonic() >= deadline:
+                timed_out = True
+                logger.warning(
+                    "Title OCR time budget exceeded before variant %s / %s; using best result so far.",
+                    tag,
+                    vtag,
+                )
+                return
             try:
                 raw_ocr = _ocr_text_merged(prep, lang, min_word_conf)
             except pytesseract.TesseractNotFoundError as e:
@@ -727,6 +801,8 @@ def extract_title_from_video(
 
     try:
         for ms in timestamps_ms:
+            if timed_out:
+                break
             cap.set(cv2.CAP_PROP_POS_MSEC, ms)
             ok, frame = cap.read()
             if not ok or frame is None:
@@ -740,10 +816,10 @@ def extract_title_from_video(
                 roi_x0,
                 roi_x1,
             )
+            if timed_out:
+                break
             # Fallback for layouts where hook sits slightly higher/lower than defaults.
             if alt_roi:
-                h = frame.shape[0]
-                band = max(int(h * 0.07), 8)
                 _try_roi(
                     f"Candidate tight upper band @ {ms:.0f} ms",
                     frame,
@@ -752,6 +828,8 @@ def extract_title_from_video(
                     roi_x0,
                     roi_x1,
                 )
+                if timed_out:
+                    break
                 _try_roi(
                     f"Candidate upper headline strip @ {ms:.0f} ms",
                     frame,
@@ -760,8 +838,13 @@ def extract_title_from_video(
                     max(0.0, roi_x0 + 0.02),
                     min(1.0, roi_x1 - 0.02),
                 )
+                if timed_out:
+                    break
     finally:
         cap.release()
+
+    if timed_out and best_text:
+        logger.info("Title extract finished after time budget (partial OCR).")
 
     return _truncate_headline_slop(best_text.strip())
 
@@ -905,6 +988,7 @@ def extract_title_for_pipeline(
         lang=(lang or os.getenv("TESSERACT_LANG", "eng")).strip(),
         alt_roi=True if alt_roi is None else bool(alt_roi),
         min_word_conf=mc,
+        deadline=_title_extract_deadline_monotonic(),
     )
 
 
@@ -1015,6 +1099,7 @@ def main(argv: list[str] | None = None) -> int:
         lang=args.lang,
         alt_roi=not args.no_alt_roi,
         min_word_conf=max(0, min(100, args.ocr_min_word_conf)),
+        deadline=_title_extract_deadline_monotonic(),
     )
 
     print(title)

@@ -23,4 +23,9 @@ COPY cookies.txt /cookies.txt
 
 EXPOSE 8000
 
+# Title OCR: many Tesseract passes; tune if n8n/proxy disconnects before completion.
+# ENV TITLE_EXTRACT_LITE=1
+# ENV TITLE_EXTRACT_MAX_SECONDS=300
+# ENV TITLE_EXTRACT_MAX_OCR_EDGE=1400
+
 CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
