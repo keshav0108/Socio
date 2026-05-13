@@ -585,15 +585,17 @@ def load_gemini_vlm_module():
 
 @app.get("/extract_title_vlm", tags=["title-extract"])
 def extract_title_vlm_help():
-    """Same body contract as GET /extract_title, but uses Gemini 2.5 Flash vision (see gemini-vlm.py)."""
+    """Same body contract as GET /extract_title, but uses Gemini 2.5 Flash-Lite vision (see gemini-vlm.py)."""
     return {
         "message": "POST multipart with the raw reel MP4 — same fields as /extract_title — JSON { ok, title, input }.",
         "difference_from_extract_title": (
             "This route uses **Gemini VLM** on the first 2–3 frames (OpenCV), not Tesseract OCR. "
-            "Requires **GOOGLE_API_KEY** or **GEMINI_API_KEY** on the API server."
+            "Requires **GOOGLE_API_KEY** or **GEMINI_API_KEY** on the API server, **or** the same "
+            "names as **HTTP headers** / optional form fields **google_api_key** / **gemini_api_key** "
+            "(per-request override for n8n)."
         ),
         "optional_form_fields": (
-            "vlm_frames: 2 or 3 (default 3). gemini_model: e.g. gemini-2.5-flash (default from env GEMINI_MODEL)."
+            "vlm_frames: 2 or 3 (default 3). gemini_model: e.g. gemini-2.5-flash-lite (default from env GEMINI_MODEL)."
         ),
         "n8n": "Replace your HTTP Extract title URL from .../extract_title to .../extract_title_vlm; keep multipart field `file` from raw_mp4.",
     }
@@ -605,7 +607,7 @@ async def extract_title_vlm_api(
     api_key: str | None = Depends(clip_download_api_key),
 ):
     """
-    On-reel hook text via Gemini 2.5 Flash (vision). Multipart contract matches POST /extract_title.
+    On-reel hook text via Gemini 2.5 Flash-Lite (vision). Multipart contract matches POST /extract_title.
     """
     verify_key(api_key)
 
@@ -640,6 +642,21 @@ async def extract_title_vlm_api(
 
     gemini_model_raw = form.get("gemini_model") or form.get("model")
     gemini_model = str(gemini_model_raw).strip() if gemini_model_raw not in (None, "") else None
+
+    gemini_pass: str | None = None
+    for hk in ("GOOGLE_API_KEY", "GEMINI_API_KEY"):
+        hv = request.headers.get(hk)
+        if hv and str(hv).strip():
+            gemini_pass = str(hv).strip()
+            break
+    if not gemini_pass:
+        for fk in ("google_api_key", "gemini_api_key"):
+            raw_gk = form.get(fk)
+            if raw_gk not in (None, ""):
+                s = str(raw_gk).strip()
+                if s:
+                    gemini_pass = s
+                    break
 
     tmp_path: str | None = None
     input_path: str | None = None
@@ -693,6 +710,7 @@ async def extract_title_vlm_api(
             input_path,
             frame_count=vlm_frames,
             model_name=gemini_model,
+            api_key=gemini_pass,
         )
         try:
             title = await asyncio.to_thread(run)

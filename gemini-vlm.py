@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Extract the on-reel headline / hook text from a short vertical clip using OpenCV (first frames)
-and Google Gemini 2.5 Flash (vision). Single system prompt; no multi-agent flow.
+and Google Gemini 2.5 Flash-Lite (vision). Single system prompt; no multi-agent flow.
 
 Setup
 -----
@@ -12,7 +12,7 @@ Setup
 Usage
 -----
   python gemini-vlm.py path/to/reel.mp4
-  python gemini-vlm.py videos/raw/15.mp4 --frames 2 --model gemini-2.5-flash
+  python gemini-vlm.py videos/raw/15.mp4 --frames 2 --model gemini-2.5-flash-lite
 
   If you see only "file not found", the path is wrong relative to your shell cwd — use a full path or ``videos\\raw\\15.mp4`` from the Socio folder.
 """
@@ -85,13 +85,22 @@ class MissingGeminiApiKeyError(RuntimeError):
     """Raised when GOOGLE_API_KEY / GEMINI_API_KEY is unset (library + API use)."""
 
 
-def _load_api_key() -> str:
+def _load_api_key(*, override: str | None = None) -> str:
+    """
+    Resolve Gemini API key: optional per-request ``override`` (e.g. HTTP header from n8n),
+    else ``GOOGLE_API_KEY`` / ``GEMINI_API_KEY`` from the environment or ``.env``.
+    """
     load_dotenv()
-    key = (os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
+    key = ""
+    if override is not None:
+        key = override.strip()
+    if not key:
+        key = (os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
     if not key:
         raise MissingGeminiApiKeyError(
-            "Missing GOOGLE_API_KEY or GEMINI_API_KEY. Set one in the API server environment "
-            "(or .env next to the app) for POST /extract_title_vlm."
+            "Missing GOOGLE_API_KEY or GEMINI_API_KEY. Set one on the API server (environment or "
+            ".env next to the app), or send header GOOGLE_API_KEY / GEMINI_API_KEY on POST "
+            "/extract_title_vlm (optional multipart fields google_api_key / gemini_api_key)."
         )
     return key
 
@@ -175,10 +184,15 @@ def _parse_title_json(raw: str) -> str:
     return str(title).strip()
 
 
-def run_gemini(images: list[Image.Image], *, model_name: str) -> str:
+def run_gemini(
+    images: list[Image.Image],
+    *,
+    model_name: str,
+    api_key: str | None = None,
+) -> str:
     import google.generativeai as genai
 
-    genai.configure(api_key=_load_api_key())
+    genai.configure(api_key=_load_api_key(override=api_key))
     model = genai.GenerativeModel(
         model_name=model_name,
         system_instruction=SYSTEM_PROMPT,
@@ -213,21 +227,23 @@ def extract_title_from_video_path(
     *,
     frame_count: int = 3,
     model_name: str | None = None,
+    api_key: str | None = None,
 ) -> str:
     """
     Programmatic entry (CLI + FastAPI): read early frames from disk, call Gemini, return hook text.
     ``frame_count`` must be 2 or 3.
+    ``api_key`` overrides env for this call only (e.g. n8n HTTP header).
     """
     if frame_count not in (2, 3):
         frame_count = 3
-    model = (model_name or os.getenv("GEMINI_MODEL", "gemini-2.5-flash")).strip()
+    model = (model_name or os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite")).strip()
     frames = extract_early_frames(video_path, count=frame_count)
-    return run_gemini(frames, model_name=model)
+    return run_gemini(frames, model_name=model, api_key=api_key)
 
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(
-        description="Extract on-reel hook text with OpenCV frames + Gemini 2.5 Flash vision."
+        description="Extract on-reel hook text with OpenCV frames + Gemini 2.5 Flash-Lite vision."
     )
     p.add_argument("video", help="Path to MP4/MOV/WebM (vertical reel)")
     p.add_argument(
@@ -239,8 +255,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument(
         "--model",
-        default=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-        help="Gemini model id (default: gemini-2.5-flash). Override with GEMINI_MODEL env.",
+        default=os.getenv("GEMINI_MODEL", "gemini-2.5-flash-lite"),
+        help="Gemini model id (default: gemini-2.5-flash-lite). Override with GEMINI_MODEL env.",
     )
     args = p.parse_args(argv)
 
