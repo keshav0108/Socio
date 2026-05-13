@@ -81,15 +81,18 @@ USER_TURN = (
 )
 
 
+class MissingGeminiApiKeyError(RuntimeError):
+    """Raised when GOOGLE_API_KEY / GEMINI_API_KEY is unset (library + API use)."""
+
+
 def _load_api_key() -> str:
     load_dotenv()
     key = (os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY") or "").strip()
     if not key:
-        print(
-            "Missing API key. Set GOOGLE_API_KEY or GEMINI_API_KEY in the environment or .env",
-            file=sys.stderr,
+        raise MissingGeminiApiKeyError(
+            "Missing GOOGLE_API_KEY or GEMINI_API_KEY. Set one in the API server environment "
+            "(or .env next to the app) for POST /extract_title_vlm."
         )
-        sys.exit(1)
     return key
 
 
@@ -264,6 +267,9 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         title = run_gemini(frames, model_name=args.model)
+    except MissingGeminiApiKeyError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
     except Exception as exc:
         print(f"Gemini error: {exc}", file=sys.stderr)
         return 3

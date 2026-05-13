@@ -675,8 +675,19 @@ async def extract_title_vlm_api(
                 },
             )
 
-        mod = load_gemini_vlm_module()
+        try:
+            mod = load_gemini_vlm_module()
+        except ImportError as e:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    f"VLM module failed to import (missing dependency): {e}. "
+                    "Install requirements.txt (opencv-python, Pillow, google-generativeai, python-dotenv)."
+                ),
+            ) from e
+
         fn = getattr(mod, "extract_title_from_video_path")
+        missing_key_cls = getattr(mod, "MissingGeminiApiKeyError", None)
         run = functools.partial(
             fn,
             input_path,
@@ -685,11 +696,21 @@ async def extract_title_vlm_api(
         )
         try:
             title = await asyncio.to_thread(run)
-        except FileNotFoundError as e:
-            raise HTTPException(status_code=404, detail=str(e)) from e
-        except ValueError as e:
-            raise HTTPException(status_code=422, detail=str(e)) from e
         except Exception as e:
+            if missing_key_cls is not None and isinstance(e, missing_key_cls):
+                raise HTTPException(status_code=503, detail=str(e)) from e
+            if isinstance(e, FileNotFoundError):
+                raise HTTPException(status_code=404, detail=str(e)) from e
+            if isinstance(e, ValueError):
+                raise HTTPException(status_code=422, detail=str(e)) from e
+            if isinstance(e, ImportError):
+                raise HTTPException(
+                    status_code=503,
+                    detail=(
+                        f"Gemini dependencies missing on server: {e}. "
+                        "Install requirements.txt (google-generativeai, Pillow)."
+                    ),
+                ) from e
             raise HTTPException(status_code=500, detail=f"Gemini VLM title extraction failed: {e}") from e
 
         return {"ok": True, "title": title, "input": os.path.basename(input_path)}
