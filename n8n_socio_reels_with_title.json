@@ -1,0 +1,294 @@
+{
+  "name": "Socio reels — fetch, title OCR, Drive, Sheet",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "socio-reels-start",
+        "options": {}
+      },
+      "id": "93b0cd34-f524-4748-9961-494abbed1bbf",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [-3440, -1392],
+      "webhookId": "7c38cb80-79cd-499e-976b-0487393ad26b"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1jGLndAUDcYShoATkYNIRzFMsft8rwqN_wLmhw7BZnMA",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list"
+        },
+        "options": {}
+      },
+      "id": "1be9639b-42dd-4326-a58e-df6dc6f4f950",
+      "name": "Sheet new reel row",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [-3152, -1392],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_YOUR_SHEETS_CREDENTIAL_ID",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "new-row-filter-01",
+              "leftValue": "={{ $json.processing_status }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "ce71012d-e3e3-48c8-9c27-ea8f056646a3",
+      "name": "Filter New Rows Only",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [-2928, -1392]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://YOUR_SOCIO_HOST/clip_download",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-key",
+              "value": "YOUR_API_KEY"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "url",
+              "value": "={{ $json.reel_url }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "raw_mp4"
+            }
+          }
+        }
+      },
+      "id": "5bfb2490-880c-4f82-8e99-9c90e924db4a",
+      "name": "HTTP fetch reel MP4",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-2704, -1392]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "f0e30b01-d45e-4bd9-8b78-a3a0f5874fbe",
+              "leftValue": "={{ !!$binary.raw_mp4 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "6b49e7ca-c772-42a1-b547-b5db9a8b3185",
+      "name": "IF fetch succeeded",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-2480, -1392]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nitem.binary.raw_mp4.mimeType = 'video/mp4';\nitem.binary.raw_mp4.fileExtension = 'mp4';\nreturn item;"
+      },
+      "id": "828458b3-8daa-4b81-b2b5-f80e5f8700ea",
+      "name": "Set Video MimeType",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-2256, -1392]
+    },
+    {
+      "parameters": {
+        "inputDataFieldName": "raw_mp4",
+        "name": "={{ $('Sheet new reel row').item.json.ID }}.mp4",
+        "driveId": {
+          "__rl": true,
+          "value": "My Drive",
+          "mode": "list"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "REPLACE_WITH_YOUR_RAW_FOLDER_ID",
+          "mode": "id"
+        },
+        "options": {}
+      },
+      "id": "156ed72d-8ccc-4f68-8a10-02a75559cd31",
+      "name": "Drive upload video to raw",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [-2032, -1392],
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "REPLACE_WITH_YOUR_DRIVE_CREDENTIAL_ID",
+          "name": "Google Drive OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://YOUR_SOCIO_HOST/extract_title",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-key",
+              "value": "YOUR_API_KEY"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "raw_mp4"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "name": "HTTP Extract title",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-1808, -1392]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1jGLndAUDcYShoATkYNIRzFMsft8rwqN_wLmhw7BZnMA",
+          "mode": "id"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "processing_status": "In progress",
+            "raw_gdrive_url": "={{ $('Drive upload video to raw').item.json.webViewLink }}",
+            "row_number": 0,
+            "name": "={{ $('Sheet new reel row').item.json.name }}",
+            "Title": "={{ $json.title }}"
+          },
+          "matchingColumns": ["name"],
+          "schema": [],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "186a2ed9-d520-422a-b035-aaa830cc9804",
+      "name": "Sheet update link status and title",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [-1584, -1392],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "REPLACE_WITH_YOUR_SHEETS_CREDENTIAL_ID",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [[{ "node": "Sheet new reel row", "type": "main", "index": 0 }]]
+    },
+    "Sheet new reel row": {
+      "main": [[{ "node": "Filter New Rows Only", "type": "main", "index": 0 }]]
+    },
+    "Filter New Rows Only": {
+      "main": [[{ "node": "HTTP fetch reel MP4", "type": "main", "index": 0 }]]
+    },
+    "HTTP fetch reel MP4": {
+      "main": [[{ "node": "IF fetch succeeded", "type": "main", "index": 0 }]]
+    },
+    "IF fetch succeeded": {
+      "main": [
+        [
+          {
+            "node": "Set Video MimeType",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Video MimeType": {
+      "main": [[{ "node": "Drive upload video to raw", "type": "main", "index": 0 }]]
+    },
+    "Drive upload video to raw": {
+      "main": [[{ "node": "HTTP Extract title", "type": "main", "index": 0 }]]
+    },
+    "HTTP Extract title": {
+      "main": [[{ "node": "Sheet update link status and title", "type": "main", "index": 0 }]]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupVersion": 1,
+    "description": "Replace YOUR_SOCIO_HOST, YOUR_API_KEY, credential IDs, Drive folder ID. Requires POST /clip_download and POST /extract_title on Socio. Chain is Set Mime → Drive → HTTP Extract (needs raw_mp4 binary on item after Drive; if missing, run HTTP Extract in parallel from Set Mime and Merge before Sheet update)."
+  }
+}

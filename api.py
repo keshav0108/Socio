@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import tempfile
 import uuid
 import importlib.util
 from contextlib import asynccontextmanager
@@ -13,6 +14,7 @@ from fastapi.security import APIKeyHeader
 from extraction import extract_video
 from putup import process_video
 from config import API_KEYS, is_valid_api_key
+from title_extract import extract_title_for_pipeline
 
 
 @asynccontextmanager
@@ -56,7 +58,15 @@ app = FastAPI(
             "name": "pipeline",
             "description": (
                 "Three-step pipeline: **clip_download** (url → raw) → **extraction** (raw → cropped) → "
-                "**process** (cropped → final). Use the same `filename` for all three."
+                "**process** (cropped → final). Use the same `filename` for all three. "
+                "Optional **extract_title** (POST raw MP4) returns OCR hook text for your sheet."
+            ),
+        },
+        {
+            "name": "title-extract",
+            "description": (
+                "OCR on-screen hook title from a raw reel MP4 (OpenCV + Tesseract). "
+                "Intended for n8n after `clip_download` / HTTP fetch: POST multipart binary, get JSON `title`."
             ),
         },
         {
@@ -418,6 +428,123 @@ async def _clip_download_response(
     )
 
 
+@app.get("/extract_title", tags=["title-extract"])
+def extract_title_api_help():
+    """GET returns how to call POST (n8n / curl)."""
+    return {
+        "message": "POST multipart with the raw reel MP4 to receive JSON { ok, title }.",
+        "auth": (
+            "Same as /clip_download: header api-key, x-api-key, or Authorization: Bearer <key> "
+            "when API_KEYS is set in .env."
+        ),
+        "body": {
+            "multipart": (
+                "Binary field name **file** (preferred), or **raw_mp4**, or **video** — same binary "
+                "as your n8n `HTTP fetch reel` output. Optional text field **filename** to read "
+                f"`{RAW_DIR}/{{filename}}` on the server instead of uploading bytes."
+            ),
+            "optional_fields": "ocr_min_word_conf (int, 0–100, default from env TITLE_OCR_MIN_WORD_CONF)",
+        },
+        "n8n_workflow": (
+            "After **IF fetch succeeded** (true branch): add **HTTP Request** → POST `.../extract_title`, "
+            "Body Content Type **multipart/form-data**, add one field type **n8n binary** / **File** "
+            "with parameter name `file` mapped from `raw_mp4`. Then **Google Sheets** update row: "
+            "set column **Title** = `{{ $json.title }}` (from the extract_title response), keep matching "
+            "on **name** (or **ID**) together with **Sheet update link and status** in one node or two."
+        ),
+        "open_docs": "/docs",
+    }
+
+
+@app.post("/extract_title", tags=["title-extract"])
+async def extract_title_api(
+    request: Request,
+    api_key: str | None = Depends(clip_download_api_key),
+):
+    """
+    OCR hook title from a raw MP4. Accepts multipart upload or an existing file under `videos/raw/`.
+    """
+    verify_key(api_key)
+
+    ct = (request.headers.get("content-type") or "").lower()
+    if "multipart" not in ct:
+        raise HTTPException(
+            status_code=415,
+            detail="Content-Type must be multipart/form-data with a file field (file, raw_mp4, or video).",
+        )
+
+    form = await request.form()
+    upload = None
+    for key in ("file", "raw_mp4", "video", "data"):
+        u = form.get(key)
+        if u is not None and hasattr(u, "read"):
+            upload = u
+            break
+
+    raw_fn = form.get("filename")
+    filename = str(raw_fn).strip() if raw_fn else request.query_params.get("filename")
+    filename = filename.strip() if filename else None
+
+    ocr_raw = form.get("ocr_min_word_conf")
+    ocr_min: int | None = None
+    if ocr_raw not in (None, ""):
+        try:
+            ocr_min = int(str(ocr_raw).strip())
+        except ValueError:
+            raise HTTPException(status_code=422, detail="ocr_min_word_conf must be an integer") from None
+
+    tmp_path: str | None = None
+    input_path: str | None = None
+
+    try:
+        if upload is not None:
+            suffix = Path(getattr(upload, "filename", None) or "reel.mp4").suffix or ".mp4"
+            if suffix.lower() not in (".mp4", ".mov", ".webm", ".mkv"):
+                suffix = ".mp4"
+            fd, tmp_path = tempfile.mkstemp(suffix=suffix, prefix="title_extract_")
+            os.close(fd)
+            with open(tmp_path, "wb") as out:
+                shutil.copyfileobj(upload.file, out)
+            input_path = tmp_path
+        elif filename:
+            safe_name = _safe_video_basename(filename)
+            input_path = os.path.join(RAW_DIR, safe_name)
+            if not os.path.isfile(input_path):
+                raise HTTPException(
+                    status_code=404,
+                    detail={
+                        "error": "Raw file not found on server",
+                        "expected_path": input_path,
+                        "hint": "POST multipart with field `file`, or run clip_download first with the same filename.",
+                    },
+                )
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "No video input",
+                    "hint": "Send multipart field `file` (binary), or form/query `filename` for an existing videos/raw/ file.",
+                },
+            )
+
+        try:
+            title = extract_title_for_pipeline(input_path, min_word_conf=ocr_min)
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e)) from e
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Title extraction failed: {e}") from e
+
+        return {"ok": True, "title": title, "input": os.path.basename(input_path)}
+    finally:
+        if tmp_path and os.path.isfile(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
 @app.get(
     "/clip_download",
     tags=["clip-download"],
@@ -436,7 +563,7 @@ async def clip_download_get(
     if not url or not url.strip():
         out = {
             "message": "clip_download expects POST (JSON {\"url\": \"...\"}) or GET with query ?url=",
-            "pipeline": "Then POST /extraction (filename) → POST /process (filename, brand_name, title). Optional ?filename= for stable names.",
+            "pipeline": "Then POST /extraction (filename) → POST /process (filename, brand_name, title). Optional ?filename= for stable names. Optional POST /extract_title (multipart file) → JSON title for Sheets.",
             "open_docs": "/docs",
             "try_get_example": "/clip_download?url=https%3A%2F%2Fwww.instagram.com%2Freel%2FYOUR_ID%2F&filename=myclip.mp4",
         }

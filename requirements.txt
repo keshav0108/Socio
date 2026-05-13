@@ -9,3 +9,4 @@ python-multipart
 apscheduler
 gspread
 google-auth
+pytesseract
