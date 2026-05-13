@@ -2,12 +2,17 @@
   "name": "Reel — fetch, extract title, Drive, Sheet (validated export)",
   "nodes": [
     {
-      "parameters": {},
-      "type": "n8n-nodes-base.manualTrigger",
-      "typeVersion": 1,
-      "position": [-5120, -2064],
-      "id": "99f70db4-d525-4b40-bcf6-598bbf7d53d9",
-      "name": "When clicking ‘Execute workflow’"
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "socio-reels-start",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [-5216, -2096],
+      "id": "f45f3ecf-a450-4d07-9b18-7fbdd31e0994",
+      "name": "Webhook Trigger",
+      "webhookId": "7c38cb80-79cd-499e-976b-0487393ad26b"
     },
     {
       "parameters": {
@@ -72,6 +77,17 @@
     },
     {
       "parameters": {
+        "options": {},
+        "batchSize": 1
+      },
+      "id": "e91a2bc3-4c5f-4a6e-9d2f-a1b3c4d5e6f7",
+      "name": "Process new reels one at a time",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [-4480, -2064]
+    },
+    {
+      "parameters": {
         "method": "POST",
         "url": "http://dr5o3ostqc3oreb2emg16fhk.72.60.205.36.sslip.io/clip_download",
         "sendHeaders": true,
@@ -93,6 +109,7 @@
           ]
         },
         "options": {
+          "timeout": 600000,
           "response": {
             "response": {
               "responseFormat": "file",
@@ -174,7 +191,7 @@
           ]
         },
         "options": {
-          "timeout": 300000,
+          "timeout": 600000,
           "response": {
             "response": {
               "responseFormat": "json",
@@ -221,24 +238,14 @@
     },
     {
       "parameters": {
-        "mode": "combine",
-        "combineBy": "combineByPosition",
-        "numberInputs": 2,
-        "options": {
-          "clashHandling": {
-            "values": {
-              "resolveClash": "preferLast",
-              "mergeMode": "deepMerge",
-              "overrideEmpty": false
-            }
-          }
-        }
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst src = $('Set Video MimeType1').item;\nif (!src.binary?.raw_mp4) {\n  throw new Error('raw_mp4 missing on Set Video MimeType1 — confirm HTTP fetch + IF true branch.');\n}\nitem.binary = { ...src.binary };\nitem.json = { ...src.json, ...item.json };\nreturn item;"
       },
-      "id": "08195d13-c529-4c43-bce6-dc2f5414b44b",
-      "name": "Merge Drive + Title",
-      "type": "n8n-nodes-base.merge",
-      "typeVersion": 3.2,
-      "position": [-3456, -2048]
+      "id": "a7c2f8e1-4b3d-4c0a-9e2f-8d1c6a5b4e3f",
+      "name": "Re-attach raw_mp4 for title",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-3504, -2112]
     },
     {
       "parameters": {
@@ -263,8 +270,8 @@
             "processing_status": "In progress",
             "raw_gdrive_url": "={{ $('Drive upload video to raw2').item.json.webViewLink }}",
             "row_number": 0,
-            "name": "={{ $('Sheet new reel row').item.json.name }}",
-            "Title": "={{ $('HTTP Extract title').item.json.title }}"
+            "name": "={{ $('Set Video MimeType1').item.json.name }}",
+            "Title": "={{ $json.title }}"
           },
           "matchingColumns": ["name"],
           "schema": [
@@ -425,14 +432,20 @@
     }
   ],
   "connections": {
-    "When clicking ‘Execute workflow’": {
+    "Webhook Trigger": {
       "main": [[{ "node": "Sheet new reel row", "type": "main", "index": 0 }]]
     },
     "Sheet new reel row": {
       "main": [[{ "node": "Filter New Rows Only", "type": "main", "index": 0 }]]
     },
     "Filter New Rows Only": {
-      "main": [[{ "node": "HTTP fetch reel MP", "type": "main", "index": 0 }]]
+      "main": [[{ "node": "Process new reels one at a time", "type": "main", "index": 0 }]]
+    },
+    "Process new reels one at a time": {
+      "main": [
+        [],
+        [{ "node": "HTTP fetch reel MP", "type": "main", "index": 0 }]
+      ]
     },
     "HTTP fetch reel MP": {
       "main": [[{ "node": "IF fetch succeeded", "type": "main", "index": 0 }]]
@@ -449,29 +462,19 @@
       ]
     },
     "Set Video MimeType1": {
-      "main": [
-        [
-          {
-            "node": "HTTP Extract title",
-            "type": "main",
-            "index": 0
-          },
-          {
-            "node": "Drive upload video to raw2",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
-    "HTTP Extract title": {
-      "main": [[{ "node": "Merge Drive + Title", "type": "main", "index": 1 }]]
+      "main": [[{ "node": "Drive upload video to raw2", "type": "main", "index": 0 }]]
     },
     "Drive upload video to raw2": {
-      "main": [[{ "node": "Merge Drive + Title", "type": "main", "index": 0 }]]
+      "main": [[{ "node": "Re-attach raw_mp4 for title", "type": "main", "index": 0 }]]
     },
-    "Merge Drive + Title": {
+    "Re-attach raw_mp4 for title": {
+      "main": [[{ "node": "HTTP Extract title", "type": "main", "index": 0 }]]
+    },
+    "HTTP Extract title": {
       "main": [[{ "node": "Sheet update link status and title", "type": "main", "index": 0 }]]
+    },
+    "Sheet update link status and title": {
+      "main": [[{ "node": "Process new reels one at a time", "type": "main", "index": 0 }]]
     }
   },
   "pinData": {},
@@ -479,11 +482,10 @@
     "instanceId": "cf378c5ef4658aaf0ea361f742da9ae9614b37f0f3ce30af274ded009b9a5ce0",
     "templateCredsSetupCompleted": true,
     "validationNotes": [
-      "MCP user-n8n-mcp was unavailable here; fixes follow n8n HTTP Request 4.4 + Merge 3.2 type definitions from prior MCP session.",
-      "Drive upload: $('Sheet new reel row1') corrected to $('Sheet new reel row') — node name must match exactly.",
-      "HTTP Extract title: contentType multipart-form-data; options.timeout 300000; responseFormat json for { title }.",
-      "Merge: typeVersion 3.2, numberInputs 2, clashHandling for combineByPosition.",
-      "Sheet update: raw_gdrive_url from Drive node, not $json.webViewLink after merge."
+      "Top branch only: Webhook Trigger → Sheet → Filter → Split in Batches (1) → fetch → IF → Set mime → Drive upload → Re-attach raw_mp4 (Code) → HTTP extract_title → Sheet update → loop Split.",
+      "Google Drive upload drops binary; Code node copies raw_mp4 from Set Video MimeType1 onto the item before /extract_title.",
+      "No parallel Drive + extract_title (avoids overload / aborted connections). Merge node removed.",
+      "HTTP fetch + extract_title timeouts 600000 ms. Sheet row match uses Set Video MimeType1.item.json.name after HTTP overwrites $json."
     ]
   }
 }

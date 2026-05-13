@@ -23,7 +23,7 @@ COPY cookies.txt /cookies.txt
 
 EXPOSE 8000
 
-# Title OCR: many Tesseract passes; tune if n8n/proxy disconnects before completion.
+# Title: Tesseract OCR (POST /extract_title) + optional Gemini VLM (POST /extract_title_vlm); set GOOGLE_API_KEY for VLM.
 # ENV TITLE_EXTRACT_LITE=1
 # ENV TITLE_EXTRACT_MAX_SECONDS=300
 # ENV TITLE_EXTRACT_MAX_OCR_EDGE=1400

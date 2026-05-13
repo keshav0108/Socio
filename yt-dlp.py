@@ -231,6 +231,105 @@ def download_video(url: str, output_path: Path) -> Tuple[bool, str | None]:
         )
     return (False, hint)
 
+
+def fetch_reel_page_metadata(url: str) -> Tuple[bool, dict | None, str | None]:
+    """
+    Fetch public page metadata via yt-dlp (download=False): **post caption** lives here
+    (`description` on Instagram), not in the MP4 pixels. Same cookies as ``download_video``.
+
+    Returns (success, payload_dict, error_message). Payload is safe to JSON; not the full yt-dlp info dict.
+    """
+    url = (url or "").strip()
+    if not url:
+        return False, None, "Empty url"
+
+    is_instagram = "instagram.com" in url.lower()
+
+    cookie_raw = str(YTDLP_COOKIE_FILE).strip()
+    if cookie_raw and ("full/path" in cookie_raw or "/path/to" in cookie_raw):
+        return (
+            False,
+            None,
+            "YTDLP_COOKIE_FILE still looks like a placeholder. Fix yt-dlp.py and restart the API.",
+        )
+
+    cookie_path: Path | None = None
+    if cookie_raw:
+        cookie_path = _resolve_cookie_path(cookie_raw)
+        if not cookie_path.is_file():
+            wsl_hint = ""
+            if os.name == "posix" and _looks_like_windows_drive_path(cookie_raw):
+                drive = cookie_raw.strip()[0].lower()
+                rest = cookie_raw.strip()[2:].replace("\\", "/").strip("/")
+                wsl_hint = (
+                    f" If uvicorn runs in WSL, use a Linux path such as /mnt/{drive}/{rest} "
+                    "or ensure cookies.txt is visible there."
+                )
+            return (
+                False,
+                None,
+                f"Cookie file not found at {cookie_raw!r}.{wsl_hint}",
+            )
+
+    if is_instagram and not cookie_path:
+        return (
+            False,
+            None,
+            "Instagram metadata requires Netscape cookies.txt at YTDLP_COOKIE_FILE (same as clip_download).",
+        )
+
+    opts: dict = {
+        "quiet": True,
+        "no_warnings": True,
+        "noprogress": True,
+        "socket_timeout": 120,
+        "retries": 3,
+        "fragment_retries": 3,
+        "extractor_args": {"instagram": {"webpage_download_timeout": 120}},
+        "http_headers": {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/131.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+        },
+    }
+    if cookie_path is not None and cookie_path.is_file():
+        opts["cookiefile"] = str(cookie_path)
+
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as exc:
+        return False, None, str(exc)
+
+    if not isinstance(info, dict):
+        return False, None, "extract_info did not return a metadata dict"
+
+    desc = (info.get("description") or "").strip()
+    title = (info.get("title") or "").strip()
+    out = {
+        "ok": True,
+        "source": "yt_dlp_page_metadata",
+        "id": info.get("id"),
+        "webpage_url": (info.get("webpage_url") or info.get("original_url") or url).strip(),
+        "uploader": (info.get("uploader") or info.get("channel") or "").strip() or None,
+        "upload_date": info.get("upload_date"),
+        "duration": info.get("duration"),
+        # Instagram: ``description`` is the **post caption** (what the creator typed under the reel).
+        "post_caption": desc,
+        # yt-dlp ``title`` is a short page title / first line — NOT the burned-in hook on the video.
+        "web_title": title,
+        "note": (
+            "post_caption and web_title come from the **web page**, not OCR. "
+            "Text **burned into the video** (hook overlay) is separate; use POST /extract_title on the MP4 "
+            "or a vision model — OCR cannot be 100% correct on arbitrary reels."
+        ),
+    }
+    return True, out, None
+
+
 def download_from_sheet(
     sheet_url: str = SHEET_URL,
     column_name: str = LINKS_COLUMN,

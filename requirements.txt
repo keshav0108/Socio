@@ -10,3 +10,5 @@ apscheduler
 gspread
 google-auth
 pytesseract
+google-generativeai
+Pillow

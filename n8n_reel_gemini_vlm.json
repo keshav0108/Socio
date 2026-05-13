@@ -1,0 +1,329 @@
+{
+  "name": "Reel branch — Gemini VLM title (replace extract_title)",
+  "nodes": [
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [-5776, -656],
+      "id": "93ec4977-6b16-49d6-9a5c-c7ddcb7f2106",
+      "name": "When clicking ‘Execute workflow’"
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nconst src = $('Set Video MimeType').item;\nif (!src.binary?.raw_mp4) {\n  throw new Error('raw_mp4 missing on Set Video MimeType — confirm HTTP fetch + IF true branch.');\n}\nitem.binary = { ...src.binary };\nitem.json = { ...src.json, ...item.json };\nreturn item;"
+      },
+      "id": "73429071-4f56-4d1b-88f4-934c34790040",
+      "name": "Re-attach raw_mp4 for title",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-3472, -624]
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1jGLndAUDcYShoATkYNIRzFMsft8rwqN_wLmhw7BZnMA",
+          "mode": "list",
+          "cachedResultName": "Instagram reels",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1jGLndAUDcYShoATkYNIRzFMsft8rwqN_wLmhw7BZnMA/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Idea dump",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1jGLndAUDcYShoATkYNIRzFMsft8rwqN_wLmhw7BZnMA/edit#gid=0"
+        },
+        "options": {}
+      },
+      "id": "d622553c-e45a-417f-8b3b-3d4049ab861b",
+      "name": "Sheet new reel row1",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [-5376, -608],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "5e2Iv15gjaxaPoT9",
+          "name": "Google Sheets OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "new-row-filter-01",
+              "leftValue": "={{ $json.processing_status }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e39e03d2-df93-49ca-bac7-324be10a07bd",
+      "name": "Filter New Rows Only1",
+      "type": "n8n-nodes-base.filter",
+      "typeVersion": 2.2,
+      "position": [-5040, -608]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "f0e30b01-d45e-4bd9-8b78-a3a0f5874fbe",
+              "leftValue": "={{ !!$binary.raw_mp4 }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "66a6a2e9-a53a-4aae-9d8c-f56ae2a91179",
+      "name": "IF fetch succeeded1",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [-4432, -608]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://dr5o3ostqc3oreb2emg16fhk.72.60.205.36.sslip.io/extract_title_vlm",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-key",
+              "value": "key789"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "multipart-form-data",
+        "bodyParameters": {
+          "parameters": [
+            {
+              "parameterType": "formBinaryData",
+              "name": "file",
+              "inputDataFieldName": "raw_mp4"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 600000
+        }
+      },
+      "id": "10226c0d-087d-4552-a585-94ec7a19c26b",
+      "name": "HTTP Gemini VLM title",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-3120, -624]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://dr5o3ostqc3oreb2emg16fhk.72.60.205.36.sslip.io/clip_download",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-key",
+              "value": "key789"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "url",
+              "value": "={{ $json.reel_url }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "raw_mp4"
+            }
+          },
+          "timeout": 600000
+        }
+      },
+      "id": "19aeccb9-9e45-464c-9613-8695c241922d",
+      "name": "HTTP fetch reel MP1",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-4736, -608]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const item = $input.item;\nitem.binary.raw_mp4.mimeType = 'video/mp4';\nitem.binary.raw_mp4.fileExtension = 'mp4';\nreturn item;"
+      },
+      "id": "8647f338-9e56-40fd-b401-1bcc0dd10180",
+      "name": "Set Video MimeType",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-4112, -624]
+    },
+    {
+      "parameters": {
+        "inputDataFieldName": "raw_mp4",
+        "name": "={{ $json.ID }}.mp4",
+        "driveId": {
+          "__rl": true,
+          "value": "My Drive",
+          "mode": "list"
+        },
+        "folderId": {
+          "__rl": true,
+          "value": "197FhyyD6c3pTZJ7n8Clkw7q6XlnSLxLj",
+          "mode": "list",
+          "cachedResultName": "Raw",
+          "cachedResultUrl": "https://drive.google.com/drive/folders/197FhyyD6c3pTZJ7n8Clkw7q6XlnSLxLj"
+        },
+        "options": {}
+      },
+      "name": "Drive upload video to raw",
+      "type": "n8n-nodes-base.googleDrive",
+      "typeVersion": 3,
+      "position": [-3840, -624],
+      "id": "ebf6509a-634e-44a3-9bfc-c6ec2aeadc65",
+      "credentials": {
+        "googleDriveOAuth2Api": {
+          "id": "foIZ58qap1cxezj6",
+          "name": "Google Drive OAuth2 API"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        [
+          {
+            "node": "Sheet new reel row1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Re-attach raw_mp4 for title": {
+      "main": [
+        [
+          {
+            "node": "HTTP Gemini VLM title",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sheet new reel row1": {
+      "main": [
+        [
+          {
+            "node": "Filter New Rows Only1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter New Rows Only1": {
+      "main": [
+        [
+          {
+            "node": "HTTP fetch reel MP1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF fetch succeeded1": {
+      "main": [
+        [
+          {
+            "node": "Set Video MimeType",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP fetch reel MP1": {
+      "main": [
+        [
+          {
+            "node": "IF fetch succeeded1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Video MimeType": {
+      "main": [
+        [
+          {
+            "node": "Drive upload video to raw",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Drive upload video to raw": {
+      "main": [
+        [
+          {
+            "node": "Re-attach raw_mp4 for title",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "note": "POST /extract_title_vlm — same multipart as /extract_title (field file ← raw_mp4). Server needs GOOGLE_API_KEY or GEMINI_API_KEY and google-generativeai (requirements.txt). Optional form fields: vlm_frames=2|3, gemini_model=gemini-2.5-flash. Sheet update node: use {{ $json.title }} unchanged."
+  }
+}

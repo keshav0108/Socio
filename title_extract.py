@@ -40,8 +40,20 @@ Environment (same spirit as sheet_cron.py)
 
   Optional: COL_TITLE (default Title), COL_LINK (default Links), TESSERACT_CMD,
   TITLE_EXTRACT_CSV — optional override for the default CSV path next to this script.
-  TITLE_EXTRACT_ROI_Y0 / _Y1 / _X0 / _X1 — crop fractions for the on-screen hook (default
-  band is the upper area above the video, not the bottom where player controls sit).
+  TITLE_EXTRACT_ROI_Y0 / _Y1 / _X0 / _X1 — crop fractions for the full upper overlay (default
+  band includes profile + caption; still used as a fallback).
+
+  TITLE_EXTRACT_CAPTION_ROI — Default 1. When 1, also OCR a **narrower horizontal band**
+  meant to sit **below the avatar + display name + handle** (caption text only on typical
+  Instagram Reels). Tune with TITLE_EXTRACT_CAPTION_ROI_Y0 / _Y1 / _X0 / _X1 (defaults
+  **0.20–0.38** vertically, **0.10–0.96** horizontally). Set to 0 to disable extra passes.
+
+  TITLE_EXTRACT_YELLOW_CAPTION_LAYER — Default 1 for the **caption-only** ROI path: extra
+  yellow/gold ink masks so coloured headlines are not beaten by white/grey handle OCR. Set 0 to skip.
+
+  TITLE_EXTRACT_SELECTION_SCORE — Default **adjusted**: pick winners using quality + hook bonuses
+  − generic overlay penalties (evolving.ai, merged Evolving Al, irry Potter, etc.) so one template
+  does not always lose to a noisy crop. Set **raw** for legacy behaviour (score = _quality_score only).
 
   TITLE_OCR_MIN_WORD_CONF — Tesseract word confidence 0–100 (default 60). Higher drops
   more hallucinated words; lower keeps faint text.
@@ -55,6 +67,12 @@ Environment (same spirit as sheet_cron.py)
 
   TITLE_EXTRACT_LITE=1 — Fewer colour planes and preprocess variants (faster, slightly
   less robust on coloured hooks).
+
+  TITLE_STRIP_IG_PREFIX — Default 1. When 1, drop a short leading run of OCR words that
+  look like Instagram display name + handle + site (merged into one line) so the sheet
+  gets the caption/hook only. Set 0 to disable.
+
+  TITLE_STRIP_IG_PREFIX_MAX_WORDS — Max leading words to try dropping (default 16).
 """
 
 from __future__ import annotations
@@ -290,6 +308,46 @@ def _roi_slice(
     return frame[y0:y1, x0:x1]
 
 
+def _normalize_roi_fracs(
+    y0: float, y1: float, x0: float, x1: float
+) -> tuple[float, float, float, float]:
+    """Clamp to [0,1] and ensure positive width/height."""
+    y0 = max(0.0, min(1.0, float(y0)))
+    y1 = max(0.0, min(1.0, float(y1)))
+    x0 = max(0.0, min(1.0, float(x0)))
+    x1 = max(0.0, min(1.0, float(x1)))
+    if y1 <= y0:
+        y1 = min(1.0, y0 + 0.06)
+    if x1 <= x0:
+        x1 = min(1.0, x0 + 0.06)
+    return y0, y1, x0, x1
+
+
+def _caption_roi_from_env_or_args(
+    *,
+    use_caption_roi: bool | None,
+    cy0: float | None,
+    cy1: float | None,
+    cx0: float | None,
+    cx1: float | None,
+) -> tuple[bool, float, float, float, float]:
+    """
+    Instagram caption-only band. Disabled if use_caption_roi is False; else env/args.
+    """
+    if use_caption_roi is False:
+        return (False, 0.0, 0.0, 0.0, 0.0)
+    if use_caption_roi is None:
+        raw = (os.getenv("TITLE_EXTRACT_CAPTION_ROI") or "1").strip().lower()
+        if raw in ("0", "no", "false", "off", ""):
+            return (False, 0.0, 0.0, 0.0, 0.0)
+    y0 = float(cy0 if cy0 is not None else os.getenv("TITLE_EXTRACT_CAPTION_ROI_Y0", "0.20"))
+    y1 = float(cy1 if cy1 is not None else os.getenv("TITLE_EXTRACT_CAPTION_ROI_Y1", "0.38"))
+    x0 = float(cx0 if cx0 is not None else os.getenv("TITLE_EXTRACT_CAPTION_ROI_X0", "0.10"))
+    x1 = float(cx1 if cx1 is not None else os.getenv("TITLE_EXTRACT_CAPTION_ROI_X1", "0.96"))
+    y0, y1, x0, x1 = _normalize_roi_fracs(y0, y1, x0, x1)
+    return (True, y0, y1, x0, x1)
+
+
 def _scale_u8(img: np.ndarray, scale: float) -> np.ndarray:
     if scale == 1.0 or scale <= 0:
         return img
@@ -349,14 +407,51 @@ def _invert_if_dark(gray: np.ndarray, thresh: float = 115.0) -> np.ndarray:
     return gray
 
 
-def _iter_preprocess_variants(bgr: np.ndarray, scale: float) -> list[tuple[str, np.ndarray]]:
+def _yellow_caption_preprocess_variants(bgr: np.ndarray, scale: float) -> list[tuple[str, np.ndarray]]:
+    """
+    Isolate yellow / gold headline ink (common on black Reel headers) for OCR.
+    TITLE_EXTRACT_YELLOW_CAPTION_LAYER=0 disables (caption ROI still runs other variants).
+    """
+    raw = (os.getenv("TITLE_EXTRACT_YELLOW_CAPTION_LAYER") or "1").strip().lower()
+    if raw in ("0", "no", "false", "off", ""):
+        return []
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(
+        hsv, np.array([10, 50, 55], dtype=np.uint8), np.array([48, 255, 255], dtype=np.uint8)
+    )
+    if float(mask.mean()) < 1.5:
+        b, g, r = cv2.split(bgr)
+        ri, gi, bi = r.astype(np.int32), g.astype(np.int32), b.astype(np.int32)
+        yellowish = ((ri + gi) // 2 - bi > 28) & (ri > 65) & (gi > 65) & (bi < 190)
+        mask = (yellowish.astype(np.uint8) * 255)
+    if float(mask.mean()) < 0.8:
+        return []
+    k = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, k, iterations=1)
+    inv = cv2.bitwise_not(mask)
+    inv = _scale_u8(inv, scale)
+    _, otsu = cv2.threshold(inv.copy(), 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    return [
+        ("yellow_ink+inv_raw", inv),
+        ("yellow_ink+inv_otsu", otsu),
+    ]
+
+
+def _iter_preprocess_variants(
+    bgr: np.ndarray, scale: float, *, prefer_yellow_layer: bool = False
+) -> list[tuple[str, np.ndarray]]:
     """
     Run OCR on several derived images: white and coloured light text on black need
     different paths; Otsu on plain grayscale often drops non-white ink.
 
     Set TITLE_EXTRACT_LITE=1 for fewer variants (recommended on small servers / n8n).
+
+    When prefer_yellow_layer is True (IG caption-only ROI), prepend yellow/gold ink
+    variants so coloured hooks are not drowned out by white/grey handle OCR.
     """
     out: list[tuple[str, np.ndarray]] = []
+    if prefer_yellow_layer:
+        out.extend(_yellow_caption_preprocess_variants(bgr, scale))
     lite = (os.getenv("TITLE_EXTRACT_LITE") or "").strip().lower() in ("1", "true", "yes", "on")
     sources = _sources_from_bgr_lite(bgr) if lite else _sources_from_bgr(bgr)
     for src_name, plane in sources:
@@ -568,8 +663,19 @@ def _strip_trailing_slop_words(text: str) -> str:
 
 def _truncate_headline_slop(text: str) -> str:
     text = _truncate_after_agi_caps_hallucination(text)
+    text = _strip_short_ocr_tail_patterns(text)
     text = _strip_trailing_slop_words(text)
     return text
+
+
+def _strip_short_ocr_tail_patterns(text: str) -> str:
+    """Drop common Tesseract tails on reel hooks (e.g. ' sw? eq', ' - ry')."""
+    t = text.strip()
+    t = re.sub(r"(?i)\s+sw\?\s+eq\.?\s*$", "", t)
+    t = re.sub(r"(?i)\s-\s+(ry|raw|eq|eh|ay|cq)\.?\s*$", "", t)
+    t = re.sub(r"(?i)(?<=\bhere)\s+(ay|eh|oh|raw|ry|eq)\.?\s*$", "", t)
+    t = re.sub(r"(?i)\s+\w{1,3}\?\s+\w{1,4}\.?\s*$", "", t)
+    return t.strip()
 
 
 _GARBAGE_TAIL_TOKENS = frozenset(
@@ -674,9 +780,211 @@ def _strip_ui_noise(text: str) -> str:
         out.append(s)
     merged = " ".join(out).strip()
     merged = re.sub(r"\s+", " ", merged)
-    # Common OCR fix: Al → AI before "gadgets/devices"
-    merged = re.sub(r"\bAl\b(?=\s+(?:gadgets?|devices?))", "AI", merged, flags=re.I)
+    # Common OCR fix: Al → AI before hook / product words (Tesseract reads "AI" as "Al").
+    merged = re.sub(
+        r"\bAl\b(?=\s+(?:gadgets?|devices?|reimagined|just|created|made|might|built|is\b))",
+        "AI",
+        merged,
+        flags=re.I,
+    )
     return merged
+
+
+_IG_CAPTION_ANCHOR_RES: tuple[re.Pattern[str], ...] = tuple(
+    re.compile(p, re.I)
+    for p in (
+        r"\bthis\s+is\s+what\b",
+        r"\bharry\s+potter\b",
+        r"\bgame\s+of\s+thrones\b",
+        r"\bal\s+reimagined\b",
+        r"\bai\s+reimagined\b",
+        r"\bal\s+just\s+created\b",
+        r"\bai\s+just\s+created\b",
+        r"\bseason\s+\d+\b",
+        r"\btrailer\s+for\b",
+        r"\bout-hollywooding\b",
+        r"\bhard\s+[-–—]\s*",
+        r"\bthis\s+might\s+be\b",
+        r"\bthe\s+most\s+unhinged\b",
+        r"\b(?:Google|Microsoft|OpenAI|Meta|Apple|Amazon)\s+just\b",
+    )
+)
+
+
+def _ig_merge_prefix_looks_noisy(prefix: str) -> bool:
+    """True when text before a caption anchor is likely display name + handle + UI."""
+    p = prefix.strip()
+    if len(p) < 6:
+        return False
+    if re.search(r"\b\w+\.\w{2,12}\b", p):
+        return True
+    words = p.split()
+    if any(re.fullmatch(r"[.:;\-|]+", w) for w in words) and len(words) >= 3:
+        return True
+    if len(words) >= 4:
+        return True
+    shouts = 0
+    for w in words:
+        core = w.strip(".,:;\"'")
+        if len(core) >= 5 and core.isupper() and core not in _HOOK_ACRONYMS:
+            shouts += 1
+    if shouts >= 1 and len(words) >= 2:
+        return True
+    if re.search(r"(?i)evolving\.ai", p):
+        return True
+    if re.search(r"(?i)\bevolving\s+al\b", p) and len(words) >= 2:
+        return True
+    # "Founders Archive Google …" / "Al Trenders AI …" — 1–2 title-case display words only.
+    if 1 <= len(words) <= 2 and _looks_like_title_case_display_prefix(words):
+        return True
+    # "Founders Archive foundersarchive …" — display name + lowercase handle run (no @).
+    if len(words) >= 3:
+        ca = words[0].strip(".,:;\"'")
+        cb = words[1].strip(".,:;\"'")
+        cc = words[2].strip(".,:;\"'")
+        if (
+            len(ca) >= 2
+            and len(cb) >= 2
+            and len(cc) >= 8
+            and ca[0].isupper()
+            and cb[0].isupper()
+            and cc.islower()
+            and cc.replace("@", "").isalnum()
+        ):
+            return True
+    return False
+
+
+def _looks_like_title_case_display_prefix(words: list[str]) -> bool:
+    """e.g. 'Founders' 'Archive' or 'Al' 'Trenders' before the real caption anchor."""
+    for w in words:
+        c = w.strip(".,:;\"'")
+        if len(c) < 2 or not c[0].isupper():
+            return False
+        tail = c[1:].replace("'", "")
+        if not tail:
+            return False
+        if not tail.islower():
+            return False
+    return True
+
+
+def _caption_fragment_after_ig_noise(text: str) -> str | None:
+    """
+    If OCR merged profile line + caption, find a known hook anchor and return text
+    from there when the skipped prefix looks like UI noise (not e.g. 'About Harry').
+    """
+    best: str | None = None
+    best_sc = -1e9
+    for rx in _IG_CAPTION_ANCHOR_RES:
+        for m in rx.finditer(text):
+            pos = m.start()
+            if pos == 0:
+                continue
+            prefix = text[:pos]
+            if not _ig_merge_prefix_looks_noisy(prefix):
+                continue
+            frag = text[pos:].strip()
+            if len(frag) < 12:
+                continue
+            sc = _quality_score(frag) + (12.0 if frag[:1].isupper() else 0.0)
+            if re.match(r"(?i)this\s+might\s+be\b", frag):
+                sc += 44.0
+            if re.match(r"(?i)^hard\s+[-–—]", frag):
+                sc -= 62.0
+            if sc > best_sc:
+                best_sc = sc
+                best = frag
+    return best
+
+
+def _strip_leading_ig_channel_prefix(text: str) -> str:
+    """
+    Instagram OCR often concatenates display name, @handle (or 'Wal.trenders'), brand
+    watermarks (EVOLVINGED), and 'evolving.ai' before the real caption.
+
+    1) Prefer a cut at a known caption anchor when the skipped prefix looks like UI.
+    2) Else try dropping 1..N leading words and keep the best _quality_score, with
+       extra penalties for handle-like tokens and shouty watermark tokens.
+    """
+    raw = (os.getenv("TITLE_STRIP_IG_PREFIX") or "1").strip().lower()
+    if raw in ("0", "no", "false", "off", ""):
+        return text
+    try:
+        max_drop = int(os.getenv("TITLE_STRIP_IG_PREFIX_MAX_WORDS", "16"))
+    except ValueError:
+        max_drop = 16
+    max_drop = max(1, min(max_drop, 24))
+
+    text = re.sub(r"\s+", " ", text.strip())
+    if not text:
+        return text
+
+    anchored = _caption_fragment_after_ig_noise(text)
+    if anchored is not None:
+        # Sliding-window trim would otherwise "win" with a short junk tail vs. a damaged hook.
+        return _fix_al_to_ai_hook(anchored.strip())
+
+    words = text.split()
+    if len(words) <= 4:
+        out = text
+        return _fix_al_to_ai_hook(out)
+
+    def _strip_score(cand: str) -> float:
+        sc = _quality_score(cand)
+        if cand and cand[0].isupper():
+            sc += 10.0
+        parts = cand.split()
+        if parts:
+            fw = parts[0].strip(".,:;\"'")
+            if re.search(r"(?i)\.(com|ai|io|net|org)\Z", fw):
+                sc -= 45.0
+            if fw.isupper() and len(fw) >= 6 and fw not in _HOOK_ACRONYMS:
+                sc -= 28.0
+        for w in parts[:5]:
+            core = w.strip(".,:;\"'")
+            if re.fullmatch(r"\w+\.\w{2,12}", core) and not re.search(
+                r"(?i)\.(com|ai|io|net|org)\Z", core
+            ):
+                sc -= 95.0
+                break
+        shouts = sum(
+            1
+            for w in parts[:7]
+            if len((c := w.strip(".,:;\"'"))) >= 6 and c.isupper() and c not in _HOOK_ACRONYMS
+        )
+        sc -= min(100.0, shouts * 32.0)
+        return sc
+
+    base_score = _strip_score(text)
+    best = text
+    best_score = base_score
+    best_i = 0
+    upper_limit = min(max_drop, len(words) - 2)
+    for i in range(1, upper_limit + 1):
+        cand = " ".join(words[i:]).strip()
+        if not cand or len(cand) < 12:
+            continue
+        sc = _strip_score(cand)
+        if sc > best_score + 0.5:
+            best_score = sc
+            best = cand
+            best_i = i
+        elif abs(sc - best_score) <= 2.0 and i < best_i:
+            best = cand
+            best_i = i
+            best_score = sc
+
+    return _fix_al_to_ai_hook(best.strip())
+
+
+def _fix_al_to_ai_hook(text: str) -> str:
+    return re.sub(
+        r"\bAl\b(?=\s+(?:reimagined|just|created|made|might|built|is\b|was\b|video\b))",
+        "AI",
+        text,
+        flags=re.I,
+    )
 
 
 def _score_candidate(text: str) -> float:
@@ -719,7 +1027,90 @@ def _quality_score(text: str) -> float:
         base += 22.0
     digit_words = sum(1 for w in text.split() if any(c.isdigit() for c in w))
     base -= digit_words * 22.0
+    # Penalize merged Instagram channel + hook (scoring must not beat a clean hook line).
+    if re.search(r"(?i)founders\s+archive\s+.*\bgoogle\s+just\b", text):
+        base -= 115.0
+    if re.search(r"(?i)(?:al|ai)\s+trenders\s+", text):
+        base -= 115.0
+    # "Harry as a Balenciaga" without Potter is almost always a bad OCR crop vs "Harry Potter as…"
+    if re.search(r"(?i)\bharry\s+as\s+a\s+balenciaga\b", text) and "potter" not in text.lower():
+        base -= 130.0
+    if re.search(r"(?i)\breimagined\s+harry\s+as\b", text) and "potter" not in text.lower():
+        base -= 95.0
+    if re.search(r"(?i)\bharry\s+potter\s+as\s+a\s+balenciaga\b", text):
+        base += 48.0
     return base
+
+
+def _reel_overlay_noise_penalty(text: str) -> float:
+    """
+    Positive penalty (subtracted in selection score) for merged channel / handle / watermark
+    OCR that should not beat a clean primary-ROI hook across varied reel templates.
+    """
+    if not text:
+        return 0.0
+    pen = 0.0
+    t = text
+    if re.search(r"(?i)evolving\.ai", t):
+        pen += 78.0
+    if re.search(r"(?i)\bevolving\s+al\b", t):
+        pen += 72.0
+    if re.search(r"(?i)evolving\b.*evolving\.ai", t):
+        pen += 45.0
+    if re.search(r"(?i)\b(?:vinged|ving\b|ving\s*\.)", t):
+        pen += 42.0
+    if re.search(r"(?i)\birry\b", t):
+        pen += 48.0
+    if re.search(r"(?i)\bry\s+potter\b", t):
+        pen += 52.0
+    if re.search(r"(?i)\bQevolving\b", t):
+        pen += 55.0
+    if "EVOl" in t or "eVOl" in t:
+        pen += 35.0
+    if re.search(r"(?i)foundersarchive", t):
+        pen += 40.0
+    if re.search(r"(?i)@evolving|@\s*evolving", t):
+        pen += 40.0
+    return min(pen, 220.0)
+
+
+def _reel_hook_shape_bonus(text: str) -> float:
+    """Small boosts for coherent headline shapes (any channel)."""
+    if not text:
+        return 0.0
+    b = 0.0
+    if re.search(r"(?i)\bharry\s+potter\b", text):
+        b += 40.0
+    if re.search(r"(?i)\bbalenciaga\b", text):
+        b += 16.0
+    if re.search(r"(?i)\bgoogle\s+just\b", text):
+        b += 32.0
+    if re.search(r"(?i)\b(?:microsoft|openai|meta|apple|amazon)\s+just\b", text):
+        b += 28.0
+    if re.search(r"(?i)\bthis\s+is\s+what\b", text):
+        b += 26.0
+    if re.search(r"(?i)\bgame\s+of\s+thrones\b", text):
+        b += 28.0
+    if text.rstrip().endswith((".", "!", "?")) and len(text) >= 28:
+        b += 8.0
+    return min(b, 95.0)
+
+
+def _selection_score(text: str) -> float:
+    """
+    Score used to pick the winning OCR variant across ROIs. Default combines _quality_score
+    with generic reel overlay penalties so a clean primary crop beats a noisy caption band.
+
+    Set TITLE_EXTRACT_SELECTION_SCORE=raw to use only _quality_score (legacy behaviour).
+    """
+    raw = (os.getenv("TITLE_EXTRACT_SELECTION_SCORE") or "adjusted").strip().lower()
+    if raw in ("raw", "legacy", "0", "off", "false"):
+        return _quality_score(text)
+    return (
+        _quality_score(text)
+        + _reel_hook_shape_bonus(text)
+        - _reel_overlay_noise_penalty(text)
+    )
 
 
 def _title_extract_deadline_monotonic() -> float | None:
@@ -752,6 +1143,11 @@ def extract_title_from_video(
     alt_roi: bool = True,
     min_word_conf: int = 60,
     deadline: float | None = None,
+    use_caption_roi: bool | None = None,
+    caption_roi_y0: float | None = None,
+    caption_roi_y1: float | None = None,
+    caption_roi_x0: float | None = None,
+    caption_roi_x1: float | None = None,
 ) -> str:
     path = os.path.abspath(video_path)
     if not os.path.isfile(path):
@@ -765,10 +1161,22 @@ def extract_title_from_video(
     best_score = -1.0
     timed_out = False
 
+    cap_on, cy0, cy1, cx0, cx1 = _caption_roi_from_env_or_args(
+        use_caption_roi=use_caption_roi,
+        cy0=caption_roi_y0,
+        cy1=caption_roi_y1,
+        cx0=caption_roi_x0,
+        cx1=caption_roi_x1,
+    )
+
     def _try_roi(tag: str, fr: np.ndarray, y0: float, y1: float, x0: float, x1: float) -> None:
         nonlocal best_text, best_score, timed_out
         chunk = _roi_slice(fr, y0, y1, x0, x1)
-        for vtag, prep in _iter_preprocess_variants(chunk, scale):
+        caption_trace = "caption-only" in tag.lower()
+        prefer_yellow = caption_trace
+        local_best_sc = -1e9
+        local_best_text = ""
+        for vtag, prep in _iter_preprocess_variants(chunk, scale, prefer_yellow_layer=prefer_yellow):
             if deadline is not None and time.monotonic() >= deadline:
                 timed_out = True
                 logger.warning(
@@ -784,20 +1192,35 @@ def extract_title_from_video(
             text = _strip_ui_noise(_clean_ocr_text(raw_ocr))
             if not text:
                 text = _clean_ocr_text(raw_ocr)
+            text = _strip_leading_ig_channel_prefix(text)
             text = _clip_hook_sentence(text)
             text = _sanitize_ocr_hook(text)
             text = _truncate_headline_slop(text)
-            sc = _quality_score(text)
+            raw_sc = _quality_score(text)
+            sc = _selection_score(text)
+            if sc > local_best_sc:
+                local_best_sc = sc
+                local_best_text = text
             if sc > best_score:
                 best_score = sc
                 best_text = text
                 logger.info(
-                    "%s [%s] (score=%.1f): %r",
+                    "%s [%s] (sel=%.1f raw=%.1f): %r",
                     tag,
                     vtag,
                     sc,
+                    raw_sc,
                     text[:160] + ("..." if len(text) > 160 else ""),
                 )
+        if caption_trace and local_best_text:
+            raw_local = _quality_score(local_best_text)
+            logger.info(
+                "%s — best among variants (sel=%.1f raw=%.1f): %r",
+                tag,
+                local_best_sc,
+                raw_local,
+                local_best_text[:180] + ("..." if len(local_best_text) > 180 else ""),
+            )
 
     try:
         for ms in timestamps_ms:
@@ -818,6 +1241,17 @@ def extract_title_from_video(
             )
             if timed_out:
                 break
+            if cap_on:
+                _try_roi(
+                    f"Candidate IG caption-only ROI @ {ms:.0f} ms",
+                    frame,
+                    cy0,
+                    cy1,
+                    cx0,
+                    cx1,
+                )
+                if timed_out:
+                    break
             # Fallback for layouts where hook sits slightly higher/lower than defaults.
             if alt_roi:
                 _try_roi(
@@ -946,6 +1380,11 @@ def extract_title_for_pipeline(
     lang: str | None = None,
     alt_roi: bool | None = None,
     min_word_conf: int | None = None,
+    use_caption_roi: bool | None = None,
+    caption_roi_y0: float | None = None,
+    caption_roi_y1: float | None = None,
+    caption_roi_x0: float | None = None,
+    caption_roi_x1: float | None = None,
 ) -> str:
     """
     Run the same title OCR as the CLI, using env defaults (TITLE_EXTRACT_*, TESSERACT_*).
@@ -989,6 +1428,11 @@ def extract_title_for_pipeline(
         alt_roi=True if alt_roi is None else bool(alt_roi),
         min_word_conf=mc,
         deadline=_title_extract_deadline_monotonic(),
+        use_caption_roi=use_caption_roi,
+        caption_roi_y0=caption_roi_y0,
+        caption_roi_y1=caption_roi_y1,
+        caption_roi_x0=caption_roi_x0,
+        caption_roi_x1=caption_roi_x1,
     )
 
 
@@ -1028,6 +1472,39 @@ def main(argv: list[str] | None = None) -> int:
         "--no-alt-roi",
         action="store_true",
         help="Do not try extra upper-band crops (faster, less robust).",
+    )
+    p.add_argument(
+        "--no-caption-roi",
+        action="store_true",
+        help="Do not try the Instagram-style caption-only horizontal band (see TITLE_EXTRACT_CAPTION_ROI_*).",
+    )
+    p.add_argument(
+        "--caption-roi-y0",
+        type=float,
+        default=None,
+        metavar="F",
+        help="Caption-only ROI top fraction (default: env TITLE_EXTRACT_CAPTION_ROI_Y0 or 0.16).",
+    )
+    p.add_argument(
+        "--caption-roi-y1",
+        type=float,
+        default=None,
+        metavar="F",
+        help="Caption-only ROI bottom fraction (default: env TITLE_EXTRACT_CAPTION_ROI_Y1 or 0.42).",
+    )
+    p.add_argument(
+        "--caption-roi-x0",
+        type=float,
+        default=None,
+        metavar="F",
+        help="Caption-only ROI left (default: env TITLE_EXTRACT_CAPTION_ROI_X0 or 0.08).",
+    )
+    p.add_argument(
+        "--caption-roi-x1",
+        type=float,
+        default=None,
+        metavar="F",
+        help="Caption-only ROI right (default: env TITLE_EXTRACT_CAPTION_ROI_X1 or 0.96).",
     )
     p.add_argument(
         "--scale",
@@ -1100,6 +1577,11 @@ def main(argv: list[str] | None = None) -> int:
         alt_roi=not args.no_alt_roi,
         min_word_conf=max(0, min(100, args.ocr_min_word_conf)),
         deadline=_title_extract_deadline_monotonic(),
+        use_caption_roi=False if args.no_caption_roi else None,
+        caption_roi_y0=args.caption_roi_y0,
+        caption_roi_y1=args.caption_roi_y1,
+        caption_roi_x0=args.caption_roi_x0,
+        caption_roi_x1=args.caption_roi_x1,
     )
 
     print(title)

@@ -57,6 +57,13 @@ app = FastAPI(
             ),
         },
         {
+            "name": "reel-metadata",
+            "description": (
+                "**Post caption** from the reel page (yt-dlp `description`) — exact platform text, same cookies as "
+                "`clip_download`. This is **not** the burned-in on-video hook; use `extract_title` or a vision model for that."
+            ),
+        },
+        {
             "name": "pipeline",
             "description": (
                 "Three-step pipeline: **clip_download** (url → raw) → **extraction** (raw → cropped) → "
@@ -68,7 +75,9 @@ app = FastAPI(
             "name": "title-extract",
             "description": (
                 "OCR on-screen hook title from a raw reel MP4 (OpenCV + Tesseract). "
-                "Intended for n8n after `clip_download` / HTTP fetch: POST multipart binary, get JSON `title`."
+                "Intended for n8n after `clip_download` / HTTP fetch: POST multipart binary, get JSON `title`. "
+                "For the **post caption** (platform text, not pixels), use **GET/POST /reel_metadata**. "
+                "For **Gemini VLM** hook text (same multipart as extract_title), use **POST /extract_title_vlm**."
             ),
         },
         {
@@ -434,7 +443,8 @@ async def _clip_download_response(
 def extract_title_api_help():
     """GET returns how to call POST (n8n / curl)."""
     return {
-        "message": "POST multipart with the raw reel MP4 to receive JSON { ok, title }.",
+        "message": "POST multipart with the raw reel MP4 to receive JSON { ok, title }. "
+        "For **Gemini VLM** (same multipart body), use POST **/extract_title_vlm** instead.",
         "auth": (
             "Same as /clip_download: header api-key, x-api-key, or Authorization: Bearer <key> "
             "when API_KEYS is set in .env."
@@ -458,7 +468,15 @@ def extract_title_api_help():
             "OCR is CPU-heavy. On the host, set **TITLE_EXTRACT_MAX_SECONDS** (default 300) to cap wall time, "
             "**TITLE_EXTRACT_MAX_OCR_EDGE** (default 1400 px) to downscale before Tesseract, "
             "**TITLE_EXTRACT_LITE=1** for fewer preprocess variants, and keep the n8n HTTP node **timeout** "
-            "≥ that cap (e.g. 300000 ms) so the client does not abort first."
+            "≥ that cap (e.g. 300000 ms) so the client does not abort first. "
+            "**TITLE_STRIP_IG_PREFIX** (default 1) trims merged Instagram display name / handle / watermark "
+            "before the caption; set **0** to disable. **TITLE_STRIP_IG_PREFIX_MAX_WORDS** (default 16) caps "
+            "how many leading words the fallback scorer tries dropping. "
+            "**TITLE_EXTRACT_CAPTION_ROI** (default 1) adds an extra OCR crop **below the usual profile row** "
+            "(tune **TITLE_EXTRACT_CAPTION_ROI_Y0/Y1/X0/X1**, defaults **0.20–0.38** × **0.10–0.96**). "
+            "**TITLE_EXTRACT_YELLOW_CAPTION_LAYER** (default 1 on that path) adds yellow/gold ink variants. "
+            "**TITLE_EXTRACT_SELECTION_SCORE** (default **adjusted**) picks OCR winners using hook bonuses "
+            "minus generic overlay noise (e.g. evolving.ai); set **raw** for legacy scoring only."
         ),
         "open_docs": "/docs",
     }
@@ -554,6 +572,135 @@ async def extract_title_api(
                 pass
 
 
+def load_gemini_vlm_module():
+    """Load ``gemini-vlm.py`` (hyphenated filename) for /extract_title_vlm."""
+    module_path = Path(__file__).with_name("gemini-vlm.py")
+    spec = importlib.util.spec_from_file_location("gemini_vlm_hook", module_path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("Unable to load gemini-vlm.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@app.get("/extract_title_vlm", tags=["title-extract"])
+def extract_title_vlm_help():
+    """Same body contract as GET /extract_title, but uses Gemini 2.5 Flash vision (see gemini-vlm.py)."""
+    return {
+        "message": "POST multipart with the raw reel MP4 — same fields as /extract_title — JSON { ok, title, input }.",
+        "difference_from_extract_title": (
+            "This route uses **Gemini VLM** on the first 2–3 frames (OpenCV), not Tesseract OCR. "
+            "Requires **GOOGLE_API_KEY** or **GEMINI_API_KEY** on the API server."
+        ),
+        "optional_form_fields": (
+            "vlm_frames: 2 or 3 (default 3). gemini_model: e.g. gemini-2.5-flash (default from env GEMINI_MODEL)."
+        ),
+        "n8n": "Replace your HTTP Extract title URL from .../extract_title to .../extract_title_vlm; keep multipart field `file` from raw_mp4.",
+    }
+
+
+@app.post("/extract_title_vlm", tags=["title-extract"])
+async def extract_title_vlm_api(
+    request: Request,
+    api_key: str | None = Depends(clip_download_api_key),
+):
+    """
+    On-reel hook text via Gemini 2.5 Flash (vision). Multipart contract matches POST /extract_title.
+    """
+    verify_key(api_key)
+
+    ct = (request.headers.get("content-type") or "").lower()
+    if "multipart" not in ct:
+        raise HTTPException(
+            status_code=415,
+            detail="Content-Type must be multipart/form-data with a file field (file, raw_mp4, or video).",
+        )
+
+    form = await request.form()
+    upload = None
+    for key in ("file", "raw_mp4", "video", "data"):
+        u = form.get(key)
+        if u is not None and hasattr(u, "read"):
+            upload = u
+            break
+
+    raw_fn = form.get("filename")
+    filename = str(raw_fn).strip() if raw_fn else request.query_params.get("filename")
+    filename = filename.strip() if filename else None
+
+    vlm_frames = 3
+    raw_frames = form.get("vlm_frames") or form.get("frames")
+    if raw_frames not in (None, ""):
+        try:
+            vlm_frames = int(str(raw_frames).strip())
+        except ValueError:
+            raise HTTPException(status_code=422, detail="vlm_frames must be 2 or 3") from None
+        if vlm_frames not in (2, 3):
+            raise HTTPException(status_code=422, detail="vlm_frames must be 2 or 3")
+
+    gemini_model_raw = form.get("gemini_model") or form.get("model")
+    gemini_model = str(gemini_model_raw).strip() if gemini_model_raw not in (None, "") else None
+
+    tmp_path: str | None = None
+    input_path: str | None = None
+
+    try:
+        if upload is not None:
+            suffix = Path(getattr(upload, "filename", None) or "reel.mp4").suffix or ".mp4"
+            if suffix.lower() not in (".mp4", ".mov", ".webm", ".mkv"):
+                suffix = ".mp4"
+            fd, tmp_path = tempfile.mkstemp(suffix=suffix, prefix="title_vlm_")
+            os.close(fd)
+            with open(tmp_path, "wb") as out:
+                shutil.copyfileobj(upload.file, out)
+            input_path = tmp_path
+        elif filename:
+            safe_name = _safe_video_basename(filename)
+            input_path = os.path.join(RAW_DIR, safe_name)
+            if not os.path.isfile(input_path):
+                raise HTTPException(
+                    status_code=404,
+                    detail={
+                        "error": "Raw file not found on server",
+                        "expected_path": input_path,
+                        "hint": "POST multipart with field `file`, or run clip_download first with the same filename.",
+                    },
+                )
+        else:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "error": "No video input",
+                    "hint": "Send multipart field `file` (binary), or form/query `filename` for an existing videos/raw/ file.",
+                },
+            )
+
+        mod = load_gemini_vlm_module()
+        fn = getattr(mod, "extract_title_from_video_path")
+        run = functools.partial(
+            fn,
+            input_path,
+            frame_count=vlm_frames,
+            model_name=gemini_model,
+        )
+        try:
+            title = await asyncio.to_thread(run)
+        except FileNotFoundError as e:
+            raise HTTPException(status_code=404, detail=str(e)) from e
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e)) from e
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Gemini VLM title extraction failed: {e}") from e
+
+        return {"ok": True, "title": title, "input": os.path.basename(input_path)}
+    finally:
+        if tmp_path and os.path.isfile(tmp_path):
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+
+
 @app.get(
     "/clip_download",
     tags=["clip-download"],
@@ -585,6 +732,87 @@ async def clip_download_get(
             out["auth"] = "No API key required (API_KEYS empty)"
         return out
     return await _clip_download_response(request, api_key, url.strip(), filename)
+
+
+@app.get(
+    "/reel_metadata",
+    tags=["reel-metadata"],
+    responses={401: {"description": "Invalid or missing API key (when API_KEYS is set)"}},
+)
+async def reel_metadata_get(
+    request: Request,
+    api_key: str | None = Depends(clip_download_api_key),
+    url: str | None = Query(None, description="Reel URL (e.g. instagram.com/reel/...)"),
+):
+    """
+    Page metadata via yt-dlp (no MP4 download). **post_caption** is the Instagram post description
+    (what the creator typed as the caption) — not text burned into the video.
+    """
+    if not url or not url.strip():
+        out = {
+            "message": "GET ?url= or POST /reel_metadata with JSON {\"url\": \"...\"}",
+            "what_this_returns": (
+                "post_caption = text from the **Instagram post** (yt-dlp description field). "
+                "web_title = short page title from yt-dlp — still not the on-screen hook font."
+            ),
+            "burned_in_hook": (
+                "Text drawn on the video must be read from pixels: POST /extract_title (OCR) or a vision API. "
+                "No OCR pipeline can be mathematically 100% on every future layout."
+            ),
+            "same_cookies_as_clip_download": True,
+            "open_docs": "/docs",
+        }
+        if API_KEYS:
+            out["auth"] = (
+                "When API_KEYS is set, calls with ?url= require header api-key, x-api-key, or Authorization: Bearer"
+            )
+        else:
+            out["auth"] = "No API key required when API_KEYS is empty"
+        return out
+    verify_key(api_key)
+    mod = load_ytdlp_module()
+    run = functools.partial(mod.fetch_reel_page_metadata, url.strip())
+    try:
+        ok, data, err = await asyncio.to_thread(run)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    if not ok or not data:
+        raise HTTPException(
+            status_code=502,
+            detail={"error": err or "metadata fetch failed"},
+        )
+    return data
+
+
+@app.post(
+    "/reel_metadata",
+    tags=["reel-metadata"],
+    responses={401: {"description": "Invalid or missing API key (when API_KEYS is set)"}},
+)
+async def reel_metadata_post(
+    request: Request,
+    api_key: str | None = Depends(clip_download_api_key),
+):
+    """Same as GET /reel_metadata?url= but URL from JSON or form (like clip_download)."""
+    verify_key(api_key)
+    reel_url, _ = await _parse_clip_download_fields(request, None, None)
+    if not reel_url or not str(reel_url).strip():
+        raise HTTPException(
+            status_code=400,
+            detail={"error": "Missing url", "hint": "Send JSON {\"url\": \"...\"} or form field url"},
+        )
+    mod = load_ytdlp_module()
+    run = functools.partial(mod.fetch_reel_page_metadata, str(reel_url).strip())
+    try:
+        ok, data, err = await asyncio.to_thread(run)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    if not ok or not data:
+        raise HTTPException(
+            status_code=502,
+            detail={"error": err or "metadata fetch failed"},
+        )
+    return data
 
 
 @app.get("/health", tags=["sheet-cron"])
