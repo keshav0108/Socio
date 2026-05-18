@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 
+import os
+import re
 import sys
 import json
+import shutil
 import subprocess
 import textwrap
 import urllib.request
@@ -39,21 +42,159 @@ def get_title():
     return title
 
 
+def _brand_entries(data) -> list[dict]:
+    """Normalize brand.json (array), {brands: [...]}, or single-object legacy shapes."""
+    if isinstance(data, list):
+        return [b for b in data if isinstance(b, dict)]
+    if isinstance(data, dict):
+        if isinstance(data.get("brands"), list):
+            return [b for b in data["brands"] if isinstance(b, dict)]
+        if data.get("name"):
+            return [data]
+    return []
+
+
+def _brand_lookup_key(name: str) -> str:
+    return name.strip().lower().lstrip("@").replace(" ", "").replace(".", "")
+
+
+def normalize_brand_name(name: str | None) -> str:
+    """Map sheet / n8n values (deepfried, @deepfried.ai, …) to brand.json ``name``."""
+    raw = (name or "").strip()
+    if not raw:
+        return ""
+    key = _brand_lookup_key(raw)
+    aliases = {
+        "finzarc": "Finzarc",
+        "finzarcai": "Finzarc",
+        "deepfried": "Deepfried",
+        "deepfriedai": "Deepfried",
+    }
+    return aliases.get(key, raw)
+
+
+def infer_brand_from_reel_id(reel_id: str | None) -> str:
+    """
+    Fallback when n8n omits brand_name: Idea dump uses IG-001…IG-006 Finzarc, IG-007+ Deepfried.
+    """
+    if not reel_id:
+        return ""
+    m = re.search(r"IG-?0*(\d+)", str(reel_id).strip(), re.I)
+    if not m:
+        return ""
+    n = int(m.group(1))
+    if n >= 7:
+        return "Deepfried"
+    if n >= 1:
+        return "Finzarc"
+    return ""
+
+
+def infer_brand_from_filename(path: str | Path) -> str:
+    """Extract IG-00x from cropped_IG-007.mp4 / final_IG-007.mp4 / IG-007.mp4."""
+    stem = Path(path).stem
+    m = re.search(r"(IG-?\d+)", stem, re.I)
+    if not m:
+        return ""
+    return infer_brand_from_reel_id(m.group(1))
+
+
+def resolve_brand_config(
+    brand_name: str | None,
+    *,
+    reel_id_hint: str | None = None,
+    filename_hint: str | Path | None = None,
+) -> dict:
+    """Pick brand.json entry; infer from reel id / filename when name missing or unknown."""
+    entries: list[dict] = []
+    if Path("brand.json").exists():
+        entries = _brand_entries(json.loads(Path("brand.json").read_text()))
+
+    name = normalize_brand_name(brand_name)
+    if not name and reel_id_hint:
+        name = infer_brand_from_reel_id(reel_id_hint)
+    if not name and filename_hint:
+        name = infer_brand_from_filename(filename_hint)
+    if not name:
+        name = _default_brand_name()
+
+    hit = _match_brand(name, entries) if entries else None
+    if hit is not None:
+        return hit
+
+    if reel_id_hint:
+        inferred = infer_brand_from_reel_id(reel_id_hint)
+        if inferred:
+            hit = _match_brand(inferred, entries)
+            if hit is not None:
+                return hit
+    if filename_hint:
+        inferred = infer_brand_from_filename(filename_hint)
+        if inferred:
+            hit = _match_brand(inferred, entries)
+            if hit is not None:
+                return hit
+
+    if len(entries) == 1:
+        return entries[0]
+    raise ValueError(
+        f"Unknown brand {brand_name!r} (hint id={reel_id_hint!r}). "
+        f"Configured: {', '.join(str(e.get('name', '')) for e in entries)}"
+    )
+
+
+def _match_brand(name: str, entries: list[dict]) -> dict | None:
+    key = normalize_brand_name(name)
+    if not key:
+        return None
+    key_l = key.lower()
+    key_compact = _brand_lookup_key(key)
+    for entry in entries:
+        if entry.get("name", "").strip().lower() == key_l:
+            return entry
+        handle = (entry.get("handle") or "").strip().lstrip("@").lower()
+        if handle and (
+            key_l == handle
+            or key_l == f"@{handle}"
+            or key_compact == _brand_lookup_key(handle)
+        ):
+            return entry
+    return None
+
+
 def find_config(name):
+    name = normalize_brand_name(name)
     for f in Path(".").glob("*.json"):
         try:
             data = json.loads(f.read_text())
-        except:
+        except Exception:
             continue
-        # `data.json` in this repo is a list (links array), not a config object.
-        # Only treat JSON objects as brand configs.
-        if not isinstance(data, dict):
-            continue
-        if data.get("name", "").lower() == name.lower():
-            return data
+        hit = _match_brand(name, _brand_entries(data))
+        if hit is not None:
+            return hit
     if Path("brand.json").exists():
-        return json.loads(Path("brand.json").read_text())
+        entries = _brand_entries(json.loads(Path("brand.json").read_text()))
+        hit = _match_brand(name, entries)
+        if hit is not None:
+            return hit
+        if len(entries) == 1:
+            return entries[0]
     sys.exit("Brand config not found")
+
+
+def _default_brand_name() -> str:
+    if not Path("brand.json").exists():
+        return "Brand"
+    entries = _brand_entries(json.loads(Path("brand.json").read_text()))
+    if len(entries) == 1:
+        return str(entries[0].get("name", "Brand"))
+    if len(entries) > 1:
+        names = ", ".join(str(e.get("name", "")) for e in entries if e.get("name"))
+        raise ValueError(
+            f"brand_name is required when multiple brands are configured ({names}). "
+            "Pass brand_name from the sheet (e.g. Deepfried or Finzarc) on POST /process."
+        )
+    return "Brand"
 
 
 def resolve_input(p):
@@ -66,17 +207,90 @@ def resolve_input(p):
     sys.exit("Input not found")
 
 
-def ffprobe(path):
-    cmd = [
-        "ffprobe", "-v", "error",
-        "-select_streams", "v:0",
-        "-show_entries", "stream=width,height",
-        "-of", "json", str(path)
-    ]
-    r = subprocess.run(cmd, capture_output=True, text=True)
-    data = json.loads(r.stdout)
-    s = data["streams"][0]
-    return int(s["width"]), int(s["height"])
+_FFMPEG_BIN_CACHE: dict[str, str] = {}
+
+
+def _winget_ffmpeg_bins() -> list[Path]:
+    """WinGet Gyan.FFmpeg installs under LocalAppData\\Microsoft\\WinGet\\Packages (often not on PATH yet)."""
+    if sys.platform != "win32":
+        return []
+    root = Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "WinGet" / "Packages"
+    if not root.is_dir():
+        return []
+    out: list[Path] = []
+    try:
+        for pkg in root.iterdir():
+            if not pkg.is_dir() or "ffmpeg" not in pkg.name.lower():
+                continue
+            for exe in pkg.rglob("ffmpeg.exe"):
+                if exe.is_file():
+                    out.append(exe.resolve())
+                    break
+    except OSError:
+        pass
+    return out
+
+
+def resolve_ffmpeg_tool(name: str) -> str:
+    """Resolve ``ffmpeg`` or ``ffprobe`` on PATH, FFMPEG_PATH / FFPROBE_PATH, or common install dirs."""
+    if name in _FFMPEG_BIN_CACHE:
+        return _FFMPEG_BIN_CACHE[name]
+
+    candidates: list[str] = []
+    env_path = os.getenv(f"{name.upper()}_PATH", "").strip()
+    if env_path:
+        candidates.append(env_path)
+
+    ffmpeg_env = os.getenv("FFMPEG_PATH", "").strip()
+    if ffmpeg_env:
+        parent = Path(ffmpeg_env).resolve().parent
+        if name == "ffmpeg":
+            candidates.append(ffmpeg_env)
+        else:
+            candidates.append(str(parent / "ffprobe.exe"))
+            candidates.append(str(parent / "ffprobe"))
+
+    found = shutil.which(name)
+    if found:
+        candidates.append(found)
+
+    if sys.platform == "win32":
+        for base in (
+            Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "ffmpeg" / "bin",
+            Path(os.environ.get("LOCALAPPDATA", "")) / "ffmpeg" / "bin",
+            Path(r"C:\ffmpeg\bin"),
+        ):
+            candidates.append(str(base / f"{name}.exe"))
+        for ffmpeg_exe in _winget_ffmpeg_bins():
+            bin_dir = ffmpeg_exe.parent
+            candidates.append(str(bin_dir / f"{name}.exe"))
+
+    for c in candidates:
+        if not c:
+            continue
+        p = Path(c)
+        if p.is_file():
+            _FFMPEG_BIN_CACHE[name] = str(p.resolve())
+            return _FFMPEG_BIN_CACHE[name]
+
+    raise FileNotFoundError(
+        f"{name} not found. Install FFmpeg and add it to PATH, or set FFMPEG_PATH to the full path "
+        f"to ffmpeg.exe (put ffprobe.exe in the same folder). "
+        "Windows: winget install --id Gyan.FFmpeg -e"
+    )
+
+
+def video_size(path: Path) -> tuple[int, int]:
+    """Read width/height via OpenCV (no ffprobe required)."""
+    cap = cv2.VideoCapture(str(path))
+    if not cap.isOpened():
+        raise RuntimeError(f"Cannot read video: {path}")
+    w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    cap.release()
+    if w <= 0 or h <= 0:
+        raise RuntimeError(f"Invalid video dimensions {w}x{h} for {path}")
+    return w, h
 
 
 def make_circular_logo(
@@ -258,7 +472,7 @@ def wrap_title_for_frame(title, max_chars_per_line, max_lines=6):
 
 
 def process(input_path, output_path, config, title):
-    video_w, video_h = ffprobe(input_path)
+    video_w, video_h = video_size(input_path)
 
     logo_width = int(config.get("logo_width", 90))
     # Circular logo is always rendered as a square (diameter == logo_width).
@@ -397,7 +611,7 @@ def process(input_path, output_path, config, title):
     filters.append(f"[{current}][vid]overlay=0:{y_video}:shortest=1[vout]")
 
     cmd = [
-        "ffmpeg", "-y",
+        resolve_ffmpeg_tool("ffmpeg"), "-y",
         "-i", str(input_path),
         "-loop", "1", "-i", str(circular_logo_path),
         "-filter_complex", ";".join(filters),
@@ -425,17 +639,17 @@ def process_video(input_path, output_path, brand_name=None, title=None):
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
+    reel_hint = None
     if isinstance(brand_name, str):
-        brand_name = brand_name.strip()
-
+        brand_name = normalize_brand_name(brand_name)
     if not brand_name:
-        if Path("brand.json").exists():
-            default_cfg = json.loads(Path("brand.json").read_text())
-            brand_name = default_cfg.get("name", "Brand")
-        else:
-            brand_name = "Brand"
+        reel_hint = infer_brand_from_filename(in_path)
 
-    config = find_config(brand_name)
+    config = resolve_brand_config(
+        brand_name,
+        reel_id_hint=reel_hint,
+        filename_hint=in_path,
+    )
     safe_title = title.strip() if isinstance(title, str) else ""
     if not safe_title:
         safe_title = config.get("name", "Video")

@@ -1,11 +1,10 @@
-{
+[
+  {
     "sno.": 1,
     "name": "Finzarc",
     "handle": "@finzarc.ai",
     "logo": "logo/finzarc_logo.png",
-  
     "logo_width": 130,
-  
     "spacing": {
       "top_padding": 80,
       "between_logo_and_brand": 40,
@@ -15,9 +14,29 @@
       "between_handle_title": 25,
       "between_title_video": 100
     },
-  
+    "fonts": {
+      "title_size": 40,
+      "handle_size": 42
+    }
+  },
+  {
+    "sno.": 2,
+    "name": "Deepfried",
+    "handle": "@deepfried.ai",
+    "logo": "logo/Deepfried.jpeg",
+    "logo_width": 130,
+    "spacing": {
+      "top_padding": 80,
+      "between_logo_and_brand": 40,
+      "between_logo_handle": 100,
+      "between_brand_and_handle": 50,
+      "between_container1_and_container2": 60,
+      "between_handle_title": 25,
+      "between_title_video": 100
+    },
     "fonts": {
       "title_size": 40,
       "handle_size": 42
     }
   }
+]

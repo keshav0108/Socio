@@ -83,6 +83,54 @@
     },
     {
       "parameters": {
+        "method": "POST",
+        "url": "http://dr5o3ostqc3oreb2emg16fhk.72.60.205.36.sslip.io/reel_metadata",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-key",
+              "value": "key789"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "url",
+              "value": "={{ $json.reel_url }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 120000
+        }
+      },
+      "id": "c4a2b1d0-9e8f-4d5c-b3a2-1d0c9b8a7e6f",
+      "name": "HTTP reel metadata",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-4920, -608]
+    },
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const row = $('Filter New Rows Only1').item.json;\nconst meta = $input.item.json;\nfunction canonBrand(v) {\n  const k = String(v || '').trim().toLowerCase().replace(/^@/, '').replace(/\\s+/g, '').replace(/\\./g, '');\n  const map = { finzarc: 'Finzarc', finzarcai: 'Finzarc', deepfried: 'Deepfried', deepfriedai: 'Deepfried' };\n  return map[k] || String(v || '').trim();\n}\nreturn {\n  json: {\n    ...row,\n    brand_name: canonBrand(row.brand_name),\n    post_caption: meta.post_caption ?? '',\n    web_title: meta.web_title ?? '',\n    reel_metadata_ok: meta.ok === true,\n    webpage_url: meta.webpage_url ?? '',\n  },\n};"
+      },
+      "id": "b7e6d5c4-3210-4fed-a987-6543210fedcb",
+      "name": "Merge row + reel_metadata",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [-4800, -608]
+    },
+    {
+      "parameters": {
         "conditions": {
           "options": {
             "caseSensitive": true,
@@ -154,6 +202,90 @@
     {
       "parameters": {
         "method": "POST",
+        "url": "http://dr5o3ostqc3oreb2emg16fhk.72.60.205.36.sslip.io/extraction",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-key",
+              "value": "key789"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "filename",
+              "value": "={{ $('Merge row + reel_metadata').item.json.ID }}.mp4"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "cropped_mp4"
+            }
+          },
+          "timeout": 600000
+        }
+      },
+      "id": "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+      "name": "HTTP Extraction",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-2880, -624]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://dr5o3ostqc3oreb2emg16fhk.72.60.205.36.sslip.io/process",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-key",
+              "value": "key789"
+            }
+          ]
+        },
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "filename",
+              "value": "={{ $('Merge row + reel_metadata').item.json.ID }}.mp4"
+            },
+            {
+              "name": "brand_name",
+              "value": "={{ $('Merge row + reel_metadata').item.json.brand_name || $('Filter New Rows Only1').item.json.brand_name }}"
+            },
+            {
+              "name": "title",
+              "value": "={{ $('HTTP Gemini VLM title').item.json.title }}"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file",
+              "outputPropertyName": "final_mp4"
+            }
+          },
+          "timeout": 600000
+        }
+      },
+      "id": "b2c3d4e5-f6a7-8901-bcde-f12345678901",
+      "name": "HTTP Process putup",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [-2640, -624]
+    },
+    {
+      "parameters": {
+        "method": "POST",
         "url": "http://dr5o3ostqc3oreb2emg16fhk.72.60.205.36.sslip.io/clip_download",
         "sendHeaders": true,
         "headerParameters": {
@@ -170,6 +302,10 @@
             {
               "name": "url",
               "value": "={{ $json.reel_url }}"
+            },
+            {
+              "name": "filename",
+              "value": "={{ $json.ID }}.mp4"
             }
           ]
         },
@@ -187,12 +323,12 @@
       "name": "HTTP fetch reel MP1",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.4,
-      "position": [-4736, -608]
+      "position": [-4680, -608]
     },
     {
       "parameters": {
         "mode": "runOnceForEachItem",
-        "jsCode": "const item = $input.item;\nitem.binary.raw_mp4.mimeType = 'video/mp4';\nitem.binary.raw_mp4.fileExtension = 'mp4';\nreturn item;"
+        "jsCode": "const item = $input.item;\nif (!item.binary?.raw_mp4) {\n  return item;\n}\nitem.binary.raw_mp4.mimeType = 'video/mp4';\nitem.binary.raw_mp4.fileExtension = 'mp4';\nconst stash = $('Merge row + reel_metadata').item.json;\nitem.json = { ...stash, ...item.json };\nreturn item;"
       },
       "id": "8647f338-9e56-40fd-b401-1bcc0dd10180",
       "name": "Set Video MimeType",
@@ -227,6 +363,97 @@
         "googleDriveOAuth2Api": {
           "id": "foIZ58qap1cxezj6",
           "name": "Google Drive OAuth2 API"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1jGLndAUDcYShoATkYNIRzFMsft8rwqN_wLmhw7BZnMA",
+          "mode": "list",
+          "cachedResultName": "Instagram reels",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1jGLndAUDcYShoATkYNIRzFMsft8rwqN_wLmhw7BZnMA/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Idea dump",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1jGLndAUDcYShoATkYNIRzFMsft8rwqN_wLmhw7BZnMA/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "processing_status": "={{ $json.ok === true ? 'ready' : 'title_failed' }}",
+            "raw_gdrive_url": "={{ $('Drive upload video to raw').item.json.webViewLink }}",
+            "name": "={{ $('Merge row + reel_metadata').item.json.ID }}.mp4",
+            "Title": "={{ $json.title }}",
+            "Caption": "={{ $('Merge row + reel_metadata').item.json.post_caption || '' }}"
+          },
+          "matchingColumns": ["name"],
+          "schema": [
+            {
+              "id": "name",
+              "displayName": "name",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Title",
+              "displayName": "Title",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "Caption",
+              "displayName": "Caption",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "raw_gdrive_url",
+              "displayName": "raw_gdrive_url",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "processing_status",
+              "displayName": "processing_status",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "id": "e3e2823c-9a0c-40fe-84e9-01d2a0c5e5b8",
+      "name": "Sheet update link status and title1",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [-2880, -624],
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "5e2Iv15gjaxaPoT9",
+          "name": "Google Sheets OAuth2 API"
         }
       }
     }
@@ -266,6 +493,28 @@
       ]
     },
     "Filter New Rows Only1": {
+      "main": [
+        [
+          {
+            "node": "HTTP reel metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP reel metadata": {
+      "main": [
+        [
+          {
+            "node": "Merge row + reel_metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge row + reel_metadata": {
       "main": [
         [
           {
@@ -319,11 +568,44 @@
           }
         ]
       ]
+    },
+    "HTTP Gemini VLM title": {
+      "main": [
+        [
+          {
+            "node": "HTTP Extraction",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Extraction": {
+      "main": [
+        [
+          {
+            "node": "HTTP Process putup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Process putup": {
+      "main": [
+        [
+          {
+            "node": "Sheet update link status and title1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "pinData": {},
   "meta": {
     "templateCredsSetupCompleted": true,
-    "note": "POST /extract_title_vlm — same multipart as /extract_title (field file ← raw_mp4). Server needs GOOGLE_API_KEY or GEMINI_API_KEY and google-generativeai (requirements.txt). Optional form fields: vlm_frames=2|3, gemini_model=gemini-2.5-flash-lite. Sheet update node: use {{ $json.title }} unchanged."
+    "note": "Set sheet column brand_name to Finzarc or Deepfried per row (IG007–IG012 → Deepfried). clip_download sends filename=ID.mp4. POST /process uses brand_name from Merge row + reel_metadata (not default Finzarc). Redeploy Socio putup.py if multiple brands. Optional GEMINI_API_KEY header on VLM node."
   }
 }

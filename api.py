@@ -14,7 +14,7 @@ from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request,
 from fastapi.responses import FileResponse
 from fastapi.security import APIKeyHeader
 from extraction import extract_video
-from putup import process_video
+from putup import infer_brand_from_reel_id, normalize_brand_name, process_video
 from config import API_KEYS, is_valid_api_key
 from title_extract import extract_title_for_pipeline
 
@@ -279,6 +279,8 @@ def process_video_api(
         filename = request.query_params.get("filename")
     if not brand_name:
         brand_name = request.query_params.get("brand_name")
+    if brand_name:
+        brand_name = normalize_brand_name(brand_name)
     if not title:
         title = request.query_params.get("title")
 
@@ -292,6 +294,8 @@ def process_video_api(
         )
 
     safe_name = _safe_video_basename(filename)
+    if not brand_name:
+        brand_name = infer_brand_from_reel_id(Path(safe_name).stem) or None
     cropped_path = os.path.join(CROPPED_DIR, f"cropped_{safe_name}")
     final_path = os.path.join(FINAL_DIR, f"final_{safe_name}")
 
